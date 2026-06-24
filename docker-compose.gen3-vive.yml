@@ -4,13 +4,21 @@
 
 x-gen3-vive-env: &gen3-vive-env
   ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
-  RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
+  # Kinova's ROS2 Kortex docs recommend CycloneDDS for MoveIt usage.
+  RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}
   PYTHONUNBUFFERED: "1"
   VIVE_UDP_PORT: ${VIVE_UDP_PORT:-9000}
   VIVE_EXPECTED_SERIAL: ${VIVE_EXPECTED_SERIAL:-}
   GEN3_VIVE_CALIBRATION: ${GEN3_VIVE_CALIBRATION:-}
   GEN3_VIVE_STATUS_TOPIC: ${GEN3_VIVE_STATUS_TOPIC:-/gen3_vive/status}
   GEN3_VIVE_PHYSICAL_DEADMAN_TOPIC: ${GEN3_VIVE_PHYSICAL_DEADMAN_TOPIC:-/gen3_vive/physical_deadman}
+  GEN3_ROBOT_IP: ${GEN3_ROBOT_IP:-0.0.0.0}
+  GEN3_DOF: ${GEN3_DOF:-7}
+  GEN3_GRIPPER: ${GEN3_GRIPPER:-robotiq_2f_85}
+  GEN3_GRIPPER_JOINT_NAME: ${GEN3_GRIPPER_JOINT_NAME:-robotiq_85_left_knuckle_joint}
+  GEN3_SERVO_CONFIG: ${GEN3_SERVO_CONFIG:-example/config/gen3_vive_moveit_servo.yaml}
+  GEN3_SERVO_START_DELAY_S: ${GEN3_SERVO_START_DELAY_S:-8.0}
+  GEN3_SERVO_AUTOSTART: ${GEN3_SERVO_AUTOSTART:-true}
 
 x-gen3-vive-common: &gen3-vive-common
   build:
@@ -24,6 +32,8 @@ x-gen3-vive-common: &gen3-vive-common
   working_dir: /workspace/wuji-retargeting
   environment:
     <<: *gen3-vive-env
+  volumes:
+    - ${GEN3_VIVE_CALIBRATION_DIR:-./example/config}:/calib:ro
   stdin_open: true
   tty: true
 
@@ -42,7 +52,7 @@ services:
 
   receiver:
     <<: *gen3-vive-common
-    profiles: ["receiver"]
+    profiles: ["receiver", "full-fake", "full-real"]
     command:
       - bash
       - -lc
@@ -69,9 +79,70 @@ services:
         --twist-topic "$$GEN3_VIVE_TWIST_TOPIC"
         --status-topic "$$GEN3_VIVE_STATUS_TOPIC"
 
+  wrapper-servo-dry-run:
+    <<: *gen3-vive-common
+    profiles: ["servo", "full-fake"]
+    environment:
+      <<: *gen3-vive-env
+      GEN3_VIVE_TWIST_TOPIC: ${GEN3_VIVE_TWIST_TOPIC:-/servo_node/delta_twist_cmds}
+    command:
+      - bash
+      - -lc
+      - >
+        exec python3 -m example.arm_teleop.gen3_vive_ros2_wrapper
+        --spin
+        --calibration-path "$${GEN3_VIVE_CALIBRATION:-example/config/gen3_vive_dry_run_calibration.yaml}"
+        --deadman-source physical_topic
+        --physical-deadman-topic "$$GEN3_VIVE_PHYSICAL_DEADMAN_TOPIC"
+        --twist-topic "$$GEN3_VIVE_TWIST_TOPIC"
+        --status-topic "$$GEN3_VIVE_STATUS_TOPIC"
+
+  deadman-hold:
+    <<: *gen3-vive-common
+    profiles: ["full-fake", "deadman"]
+    environment:
+      <<: *gen3-vive-env
+      GEN3_VIVE_DEADMAN_DELAY_S: ${GEN3_VIVE_DEADMAN_DELAY_S:-5}
+    command:
+      - bash
+      - -lc
+      - >
+        sleep "$$GEN3_VIVE_DEADMAN_DELAY_S";
+        exec ros2 topic pub -r 20
+        "$$GEN3_VIVE_PHYSICAL_DEADMAN_TOPIC"
+        std_msgs/msg/Bool "{data: true}"
+
+  gen3-servo-fake:
+    <<: *gen3-vive-common
+    profiles: ["servo", "full-fake"]
+    environment:
+      <<: *gen3-vive-env
+      GEN3_USE_FAKE_HARDWARE: "true"
+      GEN3_LAUNCH_RVIZ: "false"
+    command:
+      - bash
+      - -lc
+      - >
+        exec python3 example/arm_teleop/gen3_vive_servo_stack.py
+
+  gen3-servo-real:
+    <<: *gen3-vive-common
+    profiles: ["full-real", "real-robot"]
+    environment:
+      <<: *gen3-vive-env
+      GEN3_USE_FAKE_HARDWARE: "false"
+      GEN3_LAUNCH_RVIZ: "false"
+    command:
+      - bash
+      - -lc
+      - >
+        test "$$GEN3_ROBOT_IP" != "0.0.0.0" ||
+        { echo 'GEN3_ROBOT_IP must be set for real robot Servo stack' >&2; exit 2; };
+        exec python3 example/arm_teleop/gen3_vive_servo_stack.py
+
   wrapper-real:
     <<: *gen3-vive-common
-    profiles: ["real-robot"]
+    profiles: ["real-robot", "full-real"]
     environment:
       <<: *gen3-vive-env
       GEN3_VIVE_TWIST_TOPIC: ${GEN3_VIVE_TWIST_TOPIC:-/servo_node/delta_twist_cmds}

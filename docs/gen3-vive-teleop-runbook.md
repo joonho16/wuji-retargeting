@@ -84,19 +84,19 @@ cd /workspace/wujihand/.omx/worktrees/gen3-vive-teleop
 # Optional: edit defaults such as VIVE_UDP_PORT or ROS_DOMAIN_ID.
 cp .env.gen3-vive.example .env
 
-# Build the minimal ROS2 Humble image for receiver/wrapper tests.
+# Build the ROS2 Humble image for receiver/wrapper/Kinova MoveIt Servo tests.
 docker compose -f docker-compose.gen3-vive.yml --profile tools build shell
 
 # Run the same Python verification inside the ROS2 container.
 docker compose -f docker-compose.gen3-vive.yml --profile test run --rm test
 ```
 
-The image intentionally installs only the Gen3 VIVE path dependencies:
-ROS2 `rclpy` from the Humble base image, `geometry_msgs`, `std_msgs`, `PyYAML`,
-and network/debug tools. It does not install the full Wuji hand/camera/glove
-dependency set. The repository source is baked into the image so the host does
-not need ROS2 or a Python environment; rebuild the image after editing source
-files.
+The image installs the Gen3 VIVE path plus the binary Kinova Gen3 MoveIt Servo
+stack (`kortex_bringup`, Gen3 6/7DOF Robotiq MoveIt configs, `moveit_servo`,
+`ros2_control`, and `rmw_cyclonedds_cpp`). It does not install the full Wuji
+hand/camera/glove dependency set. The repository source is baked into the image
+so the host does not need ROS2 or a Python environment; rebuild the image after
+editing source files.
 
 Without Docker:
 
@@ -195,9 +195,49 @@ container smoke tests only. It is not a reviewed real-robot calibration.
 
 ### Stage 3: MoveIt Servo simulation / no hardware motion
 
-Run the ROS2 wrapper only against a simulated or disabled Servo target first.
-Confirm that disabled mapper output publishes zero twist and status explains the
-stop reason.
+For a host with no ROS2 install, run the full fake stack with one Compose
+command:
+
+```bash
+docker compose -f docker-compose.gen3-vive.yml --profile full-fake up --build
+```
+
+This starts:
+
+- `receiver`: Windows UDP JSON -> `/vive/gen3_tracker/pose`
+- `gen3-servo-fake`: Kinova Gen3 MoveIt + ros2_control fake hardware + Servo
+- `wrapper-servo-dry-run`: VIVE pose -> `/servo_node/delta_twist_cmds`
+- `deadman-hold`: dry-run-only Bool publisher on `/gen3_vive/physical_deadman`
+
+Check from another terminal, still without host ROS2:
+
+```bash
+docker compose -f docker-compose.gen3-vive.yml --profile tools run --rm shell \
+  bash -lc 'ros2 node list | sort'
+
+docker compose -f docker-compose.gen3-vive.yml --profile tools run --rm shell \
+  bash -lc 'ros2 topic info -v /servo_node/delta_twist_cmds'
+
+docker compose -f docker-compose.gen3-vive.yml --profile tools run --rm shell \
+  bash -lc 'ros2 topic info -v /joint_trajectory_controller/joint_trajectory'
+
+docker compose -f docker-compose.gen3-vive.yml --profile tools run --rm shell \
+  bash -lc 'ros2 topic echo --once --full-length --field data /gen3_vive/status std_msgs/msg/String'
+```
+
+Expected wiring:
+
+- `/servo_node` exists.
+- `/servo_node/start_servo` service exists and autostart returns success.
+- `/servo_node/delta_twist_cmds` has publisher `gen3_vive_mapper_wrapper` and
+  subscriber `servo_node`.
+- `/joint_trajectory_controller/joint_trajectory` has publisher `servo_node`
+  and subscriber `joint_trajectory_controller`.
+
+If no VIVE pose has arrived yet, `/gen3_vive/status` should report a stop reason
+such as `NO_FRESH_POSE_STOP`. Once the Windows sender is publishing and deadman
+is held, a fresh pose plus deadman rising edge captures neutral and then enables
+commands.
 
 ### Stage 4: real robot gated run
 
@@ -214,16 +254,15 @@ python3 -m example.arm_teleop.gen3_vive_ros2_wrapper \
   --calibration-path /path/to/gen3_vive_calibration.yaml
 ```
 
-Docker equivalent, after a Gen3 MoveIt Servo stack is already available on the
-same `ROS_DOMAIN_ID`. Mount the host directory that contains the reviewed real
+Docker equivalent, including receiver, wrapper, and real Gen3 MoveIt Servo stack
+in one Compose profile. Mount the host directory that contains the reviewed real
 calibration and point `GEN3_VIVE_CALIBRATION` at the mounted path:
 
 ```bash
-docker compose -f docker-compose.gen3-vive.yml --profile real-robot run --rm \
-  -v /absolute/host/calibration_dir:/calib:ro \
-  -e GEN3_VIVE_CALIBRATION=/calib/real_gen3_vive_calibration.yaml \
-  -e GEN3_VIVE_TWIST_TOPIC=/servo_node/delta_twist_cmds \
-  wrapper-real
+GEN3_ROBOT_IP=192.168.1.10 \
+GEN3_VIVE_CALIBRATION_DIR=/absolute/host/calibration_dir \
+GEN3_VIVE_CALIBRATION=/calib/real_gen3_vive_calibration.yaml \
+docker compose -f docker-compose.gen3-vive.yml --profile full-real up --build
 ```
 
 Keep the tracker near neutral and press the physical deadman once to capture
