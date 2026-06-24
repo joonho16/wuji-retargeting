@@ -266,20 +266,22 @@ python3 -m example.arm_teleop.gen3_vive_ros2_wrapper \
 
 Docker equivalent, including receiver, wrapper, and real Gen3 MoveIt Servo stack
 in one Compose profile. Use a repo-local calibration working directory so the
-command does not depend on this agent container's `$HOME` or your host `$HOME`:
+command does not depend on this agent container's `$HOME` or your host `$HOME`.
+If `.local/gen3_vive_calib/real_gen3_vive_calibration.yaml` is missing, the
+first `full-real` run creates a template and exits before starting Docker:
 
 ```bash
-# Creates .local/gen3_vive_calib/real_gen3_vive_calibration.yaml if missing.
-# Then edit it with measured calibration values. Do not use the template as-is.
-./scripts/gen3_vive_init_real_calib.sh
-
-# Only after review, set this inside the YAML:
-# real_robot_calibration_reviewed: true
-
 GEN3_ROBOT_IP=192.168.1.10 \
 GEN3_VIVE_CALIBRATION_DIR=.local/gen3_vive_calib \
 GEN3_VIVE_CALIBRATION=/calib/real_gen3_vive_calibration.yaml \
 ./scripts/gen3_vive_compose_rm.sh full-real
+
+# Then edit the generated file with measured calibration values:
+# .local/gen3_vive_calib/real_gen3_vive_calibration.yaml
+# Only after review, set this inside the YAML:
+# real_robot_calibration_reviewed: true
+
+# Run the same full-real command again.
 ```
 
 Keep the tracker near neutral and press the physical deadman once to capture

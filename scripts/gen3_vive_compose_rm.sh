@@ -81,6 +81,7 @@ preflight_real_robot() {
   local calib_rel
   local calib_host_dir
   local calib_host_file
+  local calib_dir_is_relative=false
 
   if [[ -z "$robot_ip" || "$robot_ip" == "0.0.0.0" ]]; then
     echo "GEN3_ROBOT_IP must be set for $profile before starting real robot services." >&2
@@ -111,20 +112,30 @@ preflight_real_robot() {
 
   case "$calib_dir" in
     /*) calib_host_dir=$calib_dir ;;
-    *) calib_host_dir=$repo_root/$calib_dir ;;
+    *)
+      calib_dir_is_relative=true
+      calib_host_dir=$repo_root/$calib_dir
+      ;;
   esac
   calib_host_file=$calib_host_dir/$calib_rel
 
-  if [[ ! -d "$calib_host_dir" ]]; then
-    echo "GEN3_VIVE_CALIBRATION_DIR does not exist on the host: $calib_host_dir" >&2
-    echo "Create it or point GEN3_VIVE_CALIBRATION_DIR at the directory containing $calib_rel." >&2
-    exit 2
-  fi
+  if [[ ! -d "$calib_host_dir" || ! -f "$calib_host_file" ]]; then
+    if [[ "$calib_dir_is_relative" == true ]]; then
+      "$script_dir/gen3_vive_init_real_calib.sh" "$calib_dir" >&2
+      echo >&2
+      echo "Created repo-local calibration template, but real robot startup is still blocked." >&2
+      echo "Edit measured calibration values in: $calib_host_file" >&2
+      echo "Then set: real_robot_calibration_reviewed: true" >&2
+      exit 2
+    fi
 
-  if [[ ! -f "$calib_host_file" ]]; then
-    echo "Calibration file is missing on the host/repo checkout: $calib_host_file" >&2
-    echo "Container path $calib_container maps to host file $calib_host_file." >&2
-    echo "Create a repo-local working file with: scripts/gen3_vive_init_real_calib.sh" >&2
+    if [[ ! -d "$calib_host_dir" ]]; then
+      echo "GEN3_VIVE_CALIBRATION_DIR does not exist on the host: $calib_host_dir" >&2
+      echo "Create it or point GEN3_VIVE_CALIBRATION_DIR at the directory containing $calib_rel." >&2
+    else
+      echo "Calibration file is missing on the host/repo checkout: $calib_host_file" >&2
+      echo "Container path $calib_container maps to host file $calib_host_file." >&2
+    fi
     exit 2
   fi
 
