@@ -335,6 +335,7 @@ class Gen3ViveMapperCore:
             "now_monotonic_s",
         )
         rising_edge = deadman.pressed and not self._last_deadman_pressed
+        new_pose_received = pose is not None
 
         if pose is not None:
             try:
@@ -400,6 +401,12 @@ class Gen3ViveMapperCore:
                     now,
                     deadman_pressed=deadman.pressed,
                     require_recapture=True,
+                    role=fresh_pose.role,
+                    source_frame=fresh_pose.frame,
+                )
+            if not new_pose_received:
+                return self._wait_for_fresh_pose_before_recapture(
+                    now,
                     role=fresh_pose.role,
                     source_frame=fresh_pose.frame,
                 )
@@ -557,6 +564,29 @@ class Gen3ViveMapperCore:
             now,
             enabled=False,
             needs_neutral_recapture=self._requires_neutral_recapture,
+            role=role,
+            source_frame=source_frame,
+        )
+
+    def _wait_for_fresh_pose_before_recapture(
+        self,
+        now: float,
+        *,
+        role: str,
+        source_frame: str,
+    ) -> MapperCommand:
+        """Return a zero stop without consuming the pending deadman rising edge."""
+
+        self._requires_neutral_recapture = True
+        self._neutral_tracker_pose = None
+        self._neutral_tool_pose = None
+        self._filtered_linear_xyz = (0.0, 0.0, 0.0)
+        self._filtered_angular_xyz = (0.0, 0.0, 0.0)
+        return self._zero_command(
+            StopReason.WAITING_FOR_NEUTRAL_RECAPTURE.value,
+            now,
+            enabled=False,
+            needs_neutral_recapture=True,
             role=role,
             source_frame=source_frame,
         )
@@ -758,8 +788,13 @@ def _required_mapping(raw: Mapping[str, Any], field_name: str) -> Mapping[str, A
 
 def _child(value: Any, field_name: str) -> Any:
     if isinstance(value, Mapping):
-        return value.get(field_name)
-    return getattr(value, field_name)
+        if field_name not in value:
+            raise MapperError("invalid_pose", f"missing PoseStamped field {field_name!r}")
+        return value[field_name]
+    try:
+        return getattr(value, field_name)
+    except AttributeError as exc:
+        raise MapperError("invalid_pose", f"missing PoseStamped field {field_name!r}") from exc
 
 
 def _finite_float_tuple(

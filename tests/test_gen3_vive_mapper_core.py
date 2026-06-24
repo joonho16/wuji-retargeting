@@ -402,6 +402,57 @@ class Gen3ViveMapperWrapperIntegrationTest(unittest.TestCase):
             StopReason.WAITING_FOR_NEUTRAL_RECAPTURE.value,
         )
 
+    def test_malformed_pose_stamped_like_adapter_forces_recapture(self) -> None:
+        mapper = Gen3ViveMapper.from_calibration(calibration())
+        valid = {
+            "header": {"frame_id": "steamvr_world"},
+            "pose": {
+                "position": {"x": 0.0, "y": 0.0, "z": 0.0},
+                "orientation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0},
+            },
+        }
+        active = {
+            "header": {"frame_id": "steamvr_world"},
+            "pose": {
+                "position": {"x": 0.02, "y": 0.0, "z": 0.0},
+                "orientation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0},
+            },
+        }
+        mapper.handle_pose(
+            valid,
+            deadman_pressed=True,
+            real_robot_latch=False,
+            now_monotonic_s=62.0,
+        )
+        command = mapper.handle_pose(
+            active,
+            deadman_pressed=True,
+            real_robot_latch=False,
+            now_monotonic_s=62.01,
+        )
+        self.assertTrue(command.enabled)
+
+        stopped = mapper.handle_pose(
+            {"header": {"frame_id": "steamvr_world"}},
+            deadman_pressed=True,
+            real_robot_latch=False,
+            now_monotonic_s=62.02,
+        )
+        self.assertFalse(stopped.enabled)
+        self.assertEqual(stopped.stop_reason, StopReason.INVALID_POSE.value)
+
+        still_held = mapper.handle_pose(
+            active,
+            deadman_pressed=True,
+            real_robot_latch=False,
+            now_monotonic_s=62.03,
+        )
+        self.assertFalse(still_held.enabled)
+        self.assertEqual(
+            still_held.stop_reason,
+            StopReason.WAITING_FOR_NEUTRAL_RECAPTURE.value,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

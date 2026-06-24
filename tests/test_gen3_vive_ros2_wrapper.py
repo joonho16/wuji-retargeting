@@ -312,6 +312,15 @@ class Gen3ViveSafetyLoopTest(unittest.TestCase):
         self.assertFalse(waiting.command_enabled)
 
         self.assertIsNone(loop.update_deadman(True, real_robot_latch=False))
+        no_new_pose = loop.poll_safety(
+            real_robot_latch=False,
+            now_monotonic_s=20.035,
+        )
+        self.assertFalse(no_new_pose.command_enabled)
+        self.assertEqual(
+            no_new_pose.stop_reason,
+            StopReason.WAITING_FOR_NEUTRAL_RECAPTURE.value,
+        )
         recaptured = loop.handle_pose(
             pose_msg(0.02),
             real_robot_latch=False,
@@ -355,6 +364,25 @@ class Gen3ViveSafetyLoopTest(unittest.TestCase):
             still_held.stop_reason,
             StopReason.WAITING_FOR_NEUTRAL_RECAPTURE.value,
         )
+
+        loop.update_deadman(False, real_robot_latch=False, now_monotonic_s=30.04)
+        self.assertIsNone(loop.update_deadman(True, real_robot_latch=False))
+        no_new_pose = loop.poll_safety(
+            real_robot_latch=False,
+            now_monotonic_s=30.045,
+        )
+        self.assertFalse(no_new_pose.command_enabled)
+        self.assertEqual(
+            no_new_pose.stop_reason,
+            StopReason.WAITING_FOR_NEUTRAL_RECAPTURE.value,
+        )
+        recaptured = loop.handle_pose(
+            pose_msg(0.03),
+            real_robot_latch=False,
+            now_monotonic_s=30.05,
+        )
+        self.assertTrue(recaptured.command_enabled)
+        self.assertEqual(recaptured.stop_reason, StopReason.NEUTRAL_CAPTURED.value)
 
 
 class Gen3ViveTwistStampedPayloadTest(unittest.TestCase):
