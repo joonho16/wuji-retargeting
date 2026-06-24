@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import unittest
 from inspect import signature
 from types import SimpleNamespace
@@ -98,6 +99,8 @@ class Gen3ViveMapperCalibrationTest(unittest.TestCase):
         self.assertEqual(cal.source_frame, "steamvr_world")
         self.assertEqual(cal.tracker_role, "gen3_tracker")
         self.assertEqual(cal.planning_frame, "base_link")
+        self.assertEqual(cal.linear_deadband_m, 0.0)
+        self.assertEqual(cal.angular_deadband_rad, 0.0)
 
     def test_calibration_rejects_missing_and_invalid_fields(self) -> None:
         bad = calibration_dict()
@@ -119,6 +122,12 @@ class Gen3ViveMapperCalibrationTest(unittest.TestCase):
             Gen3ViveCalibration.from_mapping(
                 calibration_dict(workspace_limits={"x": [1.0, -1.0], "y": [-1, 1], "z": [-1, 1]})
             )
+
+        with self.assertRaisesRegex(MapperError, "linear_deadband_m"):
+            Gen3ViveCalibration.from_mapping(calibration_dict(linear_deadband_m=-0.001))
+
+        with self.assertRaisesRegex(MapperError, "angular_deadband_rad"):
+            Gen3ViveCalibration.from_mapping(calibration_dict(angular_deadband_rad=float("nan")))
 
 
 class Gen3ViveMapperStateMachineTest(unittest.TestCase):
@@ -206,10 +215,93 @@ class Gen3ViveMapperStateMachineTest(unittest.TestCase):
             now_monotonic_s=20.01,
         )
 
-        # Tool x=0.04 plus delta is clamped to workspace max x=0.05, so
-        # command delta becomes 0.01; alpha=0.5 filters first output to 0.005.
-        self.assertAlmostEqual(command.linear_xyz[0], 0.005)
+        # Workspace limits bound the tracker-driven offset relative to the
+        # neutral tool pose.  The 0.2 m tracker delta is clamped to a 0.05 m
+        # offset; alpha=0.5 filters the first output to 0.025.
+        self.assertAlmostEqual(command.linear_xyz[0], 0.025)
         self.assertEqual(command.linear_xyz[1:], (0.0, 0.0))
+
+    def test_zero_tracker_delta_does_not_pull_absolute_tool_pose_into_workspace_box(self) -> None:
+        core = Gen3ViveMapperCore(
+            calibration(),
+            MapperRuntimeConfig(dry_run=True, low_pass_alpha=1.0),
+        )
+        neutral_tool = ToolPose((0.40, 0.10, 0.30), (0.0, 0.0, 0.0, 1.0))
+
+        neutral = core.update(
+            pose=pose(0.0, 0.0, 0.0, t=21.0),
+            deadman=deadman(True),
+            now_monotonic_s=21.0,
+            current_tool_pose=neutral_tool,
+        )
+        self.assertEqual(neutral.stop_reason, StopReason.NEUTRAL_CAPTURED.value)
+
+        still = core.update(
+            pose=pose(0.0, 0.0, 0.0, t=21.01),
+            deadman=deadman(True),
+            now_monotonic_s=21.01,
+            current_tool_pose=neutral_tool,
+        )
+
+        self.assertTrue(still.enabled)
+        self.assertIsNone(still.stop_reason)
+        self.assertEqual(still.linear_xyz, (0.0, 0.0, 0.0))
+        self.assertTrue(still.zero_command)
+
+    def test_linear_deadband_suppresses_stationary_tracker_jitter(self) -> None:
+        core = Gen3ViveMapperCore(
+            calibration(linear_deadband_m=0.01),
+            MapperRuntimeConfig(dry_run=True, low_pass_alpha=1.0),
+        )
+        core.update(
+            pose=pose(0.0, 0.0, 0.0, t=22.0),
+            deadman=deadman(True),
+            now_monotonic_s=22.0,
+            current_tool_pose=ToolPose((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)),
+        )
+
+        jitter = core.update(
+            pose=pose(0.004, -0.003, 0.002, t=22.01),
+            deadman=deadman(True),
+            now_monotonic_s=22.01,
+            current_tool_pose=ToolPose((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)),
+        )
+
+        self.assertTrue(jitter.enabled)
+        self.assertEqual(jitter.linear_xyz, (0.0, 0.0, 0.0))
+        self.assertTrue(jitter.zero_command)
+
+    def test_angular_deadband_suppresses_stationary_tracker_orientation_jitter(self) -> None:
+        core = Gen3ViveMapperCore(
+            calibration(angular_deadband_rad=0.05),
+            MapperRuntimeConfig(dry_run=True, low_pass_alpha=1.0),
+        )
+        identity_tool = ToolPose((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0))
+        core.update(
+            pose=pose(0.0, 0.0, 0.0, t=23.0),
+            deadman=deadman(True),
+            now_monotonic_s=23.0,
+            current_tool_pose=identity_tool,
+        )
+
+        small_angle_rad = 0.02
+        half_angle = small_angle_rad / 2.0
+        jitter = core.update(
+            pose=pose(
+                0.0,
+                0.0,
+                0.0,
+                t=23.01,
+                quat=(math.sin(half_angle), 0.0, 0.0, math.cos(half_angle)),
+            ),
+            deadman=deadman(True),
+            now_monotonic_s=23.01,
+            current_tool_pose=identity_tool,
+        )
+
+        self.assertTrue(jitter.enabled)
+        self.assertEqual(jitter.angular_xyz, (0.0, 0.0, 0.0))
+        self.assertTrue(jitter.zero_command)
 
     def test_stale_stop_requires_release_and_new_deadman_rising_edge(self) -> None:
         self.core.update(

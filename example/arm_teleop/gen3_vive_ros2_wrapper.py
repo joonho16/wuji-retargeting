@@ -78,6 +78,7 @@ class Gen3ViveRos2WrapperConfig:
     real_robot: bool = False
     real_robot_latch: bool = False
     synthetic_deadman_pressed: bool = False
+    low_pass_alpha: float = 1.0
 
     def validate(self) -> None:
         """Validate safety defaults before publishing or spinning a ROS2 node."""
@@ -87,6 +88,7 @@ class Gen3ViveRos2WrapperConfig:
         _require_non_empty(self.tool_frame, "tool_frame")
         _require_non_empty(self.mapper_factory, "mapper_factory")
         _require_positive_finite(self.watchdog_period_s, "watchdog_period_s")
+        _require_unit_interval_open_closed(self.low_pass_alpha, "low_pass_alpha")
 
         if self.backend == MOVEIT_SERVO_TWIST_BACKEND:
             _require_non_empty(self.twist_topic, "twist_topic")
@@ -174,6 +176,14 @@ def _require_positive_finite(value: float, field_name: str) -> None:
         raise Gen3ViveRos2WrapperConfigError(f"{field_name} must be a positive number")
     if not math.isfinite(float(value)) or float(value) <= 0.0:
         raise Gen3ViveRos2WrapperConfigError(f"{field_name} must be positive and finite")
+
+
+def _require_unit_interval_open_closed(value: float, field_name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise Gen3ViveRos2WrapperConfigError(f"{field_name} must be in (0, 1]")
+    value_f = float(value)
+    if not math.isfinite(value_f) or not 0.0 < value_f <= 1.0:
+        raise Gen3ViveRos2WrapperConfigError(f"{field_name} must be in (0, 1]")
 
 
 def _finite_xyz(values: Any, field_name: str) -> tuple[float, float, float]:
@@ -330,6 +340,7 @@ def build_mapper_runtime_config(config: Gen3ViveRos2WrapperConfig) -> Any:
         real_robot=config.real_robot,
         command_backend=config.backend,
         allow_diagnostic_kortex=False,
+        low_pass_alpha=config.low_pass_alpha,
     )
 
 
@@ -623,6 +634,15 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--calibration-path", default=None)
     parser.add_argument("--watchdog-period-s", type=float, default=DEFAULT_WATCHDOG_PERIOD_S)
     parser.add_argument(
+        "--low-pass-alpha",
+        type=float,
+        default=1.0,
+        help=(
+            "Mapper command low-pass alpha in (0, 1]. 1 disables smoothing; "
+            "smaller values reduce VIVE/TF jitter but add lag."
+        ),
+    )
+    parser.add_argument(
         "--backend",
         choices=[MOVEIT_SERVO_TWIST_BACKEND],
         default=MOVEIT_SERVO_TWIST_BACKEND,
@@ -671,6 +691,7 @@ def config_from_args(args: argparse.Namespace) -> Gen3ViveRos2WrapperConfig:
         real_robot=bool(args.real_robot),
         real_robot_latch=bool(args.real_robot_latch),
         synthetic_deadman_pressed=bool(args.synthetic_deadman_pressed),
+        low_pass_alpha=float(args.low_pass_alpha),
     )
 
 

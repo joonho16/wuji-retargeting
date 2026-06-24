@@ -15,7 +15,7 @@ Safety boundaries implemented here:
 * fresh pose + new deadman rising edge required after every stop,
 * finite pose/quaternion, role, and frame refusal,
 * target-tool-pose following when wrappers provide current TF feedback,
-* workspace/velocity clamp plus optional low-pass filtering,
+* workspace/velocity clamp plus optional deadband and low-pass filtering,
 * direct Kortex twist backend quarantined behind explicit diagnostic opt-in.
 
 The Windows/OpenVR/VIVE sender and Wuji Hand input-device/teleop entrypoints are
@@ -87,7 +87,13 @@ class CalibrationTransform:
 
 @dataclass(frozen=True)
 class WorkspaceLimits:
-    """Axis-aligned planning-frame workspace bounds."""
+    """Axis-aligned planning-frame bounds for tracker-driven tool offsets.
+
+    The limits are relative to the neutral tool pose captured on the deadman
+    rising edge, not absolute base-link coordinates.  A zero tracker delta must
+    therefore command zero tool motion even if the robot's starting TCP pose is
+    outside this relative offset box.
+    """
 
     x: tuple[float, float]
     y: tuple[float, float]
@@ -129,6 +135,8 @@ class Gen3ViveCalibration:
     max_linear_mps: float
     max_angular_radps: float
     stale_timeout_s: float
+    linear_deadband_m: float = 0.0
+    angular_deadband_rad: float = 0.0
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> "Gen3ViveCalibration":
@@ -156,6 +164,16 @@ class Gen3ViveCalibration:
             max_linear_mps=_positive_finite_float(raw, "max_linear_mps"),
             max_angular_radps=_positive_finite_float(raw, "max_angular_radps"),
             stale_timeout_s=_positive_finite_float(raw, "stale_timeout_s"),
+            linear_deadband_m=_nonnegative_finite_float(
+                raw,
+                "linear_deadband_m",
+                default=0.0,
+            ),
+            angular_deadband_rad=_nonnegative_finite_float(
+                raw,
+                "angular_deadband_rad",
+                default=0.0,
+            ),
         )
         return calibration
 
@@ -517,23 +535,25 @@ class Gen3ViveMapperCore:
             self.calibration.T_planning_source.rotation_xyzw,
             source_delta,
         )
-        target_offset = _scale3(planning_delta, self.calibration.linear_scale)
+        target_offset = self.calibration.workspace_limits.clamp_position(
+            _scale3(planning_delta, self.calibration.linear_scale)
+        )
         if self._neutral_tool_pose is not None:
             target_position = _add3(self._neutral_tool_pose.position_xyz, target_offset)
-            bounded_target = self.calibration.workspace_limits.clamp_position(target_position)
             if current_tool_pose is not None:
                 # Pose-follow mode: tracker displacement defines a target tool
                 # position.  The Twist command is proportional to remaining
                 # target error, so the robot stops once it reaches the target
                 # even if the tracker stays offset from neutral.
-                linear = _sub3(bounded_target, current_tool_pose.position_xyz)
+                linear = _sub3(target_position, current_tool_pose.position_xyz)
             else:
                 # Compatibility/rate mode for dependency-light dry-run tests or
                 # diagnostic launches without TF feedback.  Real robot mode is
                 # blocked earlier if current_tool_pose is unavailable.
-                linear = _sub3(bounded_target, self._neutral_tool_pose.position_xyz)
+                linear = _sub3(target_position, self._neutral_tool_pose.position_xyz)
         else:
             linear = target_offset
+        linear = _deadband3(linear, self.calibration.linear_deadband_m)
         linear = _limit_magnitude(linear, self.calibration.max_linear_mps)
 
         delta_quat = _quat_multiply(pose.quaternion_xyzw, _quat_conjugate(neutral.quaternion_xyzw))
@@ -556,6 +576,7 @@ class Gen3ViveMapperCore:
             angular = _quat_to_rotvec(orientation_error)
         else:
             angular = target_rotvec
+        angular = _deadband3(angular, self.calibration.angular_deadband_rad)
         angular = _limit_magnitude(angular, self.calibration.max_angular_radps)
 
         alpha = self.runtime.low_pass_alpha
@@ -890,6 +911,18 @@ def _positive_finite_float(raw: Mapping[str, Any], field_name: str) -> float:
     return value
 
 
+def _nonnegative_finite_float(
+    raw: Mapping[str, Any],
+    field_name: str,
+    *,
+    default: float,
+) -> float:
+    value = _coerce_finite_float(raw.get(field_name, default), field_name)
+    if value < 0.0:
+        raise MapperError("invalid_calibration", f"{field_name!r} must be >= 0")
+    return value
+
+
 def _coerce_vector3(value: Any, field_name: str) -> Vector3:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
         raise MapperError("invalid_pose", f"{field_name} must be a length-3 sequence")
@@ -946,6 +979,12 @@ def _blend3(previous: Vector3, current: Vector3, alpha: float) -> Vector3:
 
 def _norm3(a: Vector3) -> float:
     return math.sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2])
+
+
+def _deadband3(vector: Vector3, deadband: float) -> Vector3:
+    if deadband <= 0.0 or _norm3(vector) > deadband:
+        return vector
+    return (0.0, 0.0, 0.0)
 
 
 def _limit_magnitude(vector: Vector3, max_magnitude: float) -> Vector3:

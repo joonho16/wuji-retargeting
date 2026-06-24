@@ -12,6 +12,7 @@ x-gen3-vive-env: &gen3-vive-env
   GEN3_VIVE_CALIBRATION: ${GEN3_VIVE_CALIBRATION:-}
   GEN3_VIVE_STATUS_TOPIC: ${GEN3_VIVE_STATUS_TOPIC:-/gen3_vive/status}
   GEN3_VIVE_PHYSICAL_DEADMAN_TOPIC: ${GEN3_VIVE_PHYSICAL_DEADMAN_TOPIC:-/gen3_vive/physical_deadman}
+  GEN3_VIVE_LOW_PASS_ALPHA: ${GEN3_VIVE_LOW_PASS_ALPHA:-1.0}
   GEN3_ROBOT_IP: ${GEN3_ROBOT_IP:-0.0.0.0}
   GEN3_DOF: ${GEN3_DOF:-7}
   GEN3_GRIPPER: ${GEN3_GRIPPER:-robotiq_2f_85}
@@ -78,6 +79,7 @@ services:
         --spin
         --calibration-path "$${GEN3_VIVE_CALIBRATION:-example/config/gen3_vive_dry_run_calibration.yaml}"
         --synthetic-deadman-pressed
+        --low-pass-alpha "$$GEN3_VIVE_LOW_PASS_ALPHA"
         --twist-topic "$$GEN3_VIVE_TWIST_TOPIC"
         --status-topic "$$GEN3_VIVE_STATUS_TOPIC"
 
@@ -96,6 +98,7 @@ services:
         --calibration-path "$${GEN3_VIVE_CALIBRATION:-example/config/gen3_vive_dry_run_calibration.yaml}"
         --deadman-source physical_topic
         --physical-deadman-topic "$$GEN3_VIVE_PHYSICAL_DEADMAN_TOPIC"
+        --low-pass-alpha "$$GEN3_VIVE_LOW_PASS_ALPHA"
         --twist-topic "$$GEN3_VIVE_TWIST_TOPIC"
         --status-topic "$$GEN3_VIVE_STATUS_TOPIC"
 
@@ -178,6 +181,7 @@ services:
         --physical-deadman-topic "$$GEN3_VIVE_PHYSICAL_DEADMAN_TOPIC"
         --real-robot-latch
         --calibration-path "$$GEN3_VIVE_CALIBRATION"
+        --low-pass-alpha "$$GEN3_VIVE_LOW_PASS_ALPHA"
         --twist-topic "$$GEN3_VIVE_TWIST_TOPIC"
         --status-topic "$$GEN3_VIVE_STATUS_TOPIC"
 

@@ -44,12 +44,18 @@ T_tool_tracker_mount:
   rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
 linear_scale: 1.0
 angular_scale: 1.0
+# Per-axis tracker-driven tool offset limits, relative to the neutral tool pose
+# captured when deadman changes false -> true.
 workspace_limits:
   x: [-0.25, 0.25]
   y: [-0.25, 0.25]
   z: [-0.20, 0.20]
 max_linear_mps: 0.10
 max_angular_radps: 0.25
+# Optional stationary-jitter suppression.  0 disables; start real-robot tests
+# around 0.003 m and 0.02 rad if VIVE/TF noise creates joint buzz.
+linear_deadband_m: 0.003
+angular_deadband_rad: 0.02
 stale_timeout_s: 0.10
 ```
 
@@ -86,6 +92,12 @@ The ROS2 wrapper runs a watchdog timer (`--watchdog-period-s`, default `0.02`)
 that calls the mapper even when no new pose arrives, so sender/tracking loss
 reaches the stale-stop path. A physical deadman falling edge publishes an
 immediate zero stop before waiting for the next pose.
+
+Stationary VIVE/TF jitter can otherwise produce small nonzero Twist commands on
+every pose update. `linear_deadband_m` and `angular_deadband_rad` zero those
+small target errors before speed limiting. `GEN3_VIVE_LOW_PASS_ALPHA` can also
+be set at launch (`1.0` disables smoothing; lower values reduce buzz but add
+lag).
 
 ## Staged bring-up
 

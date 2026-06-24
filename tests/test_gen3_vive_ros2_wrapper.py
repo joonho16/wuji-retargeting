@@ -105,6 +105,16 @@ class Gen3ViveRos2WrapperConfigTest(unittest.TestCase):
         self.assertEqual(config.twist_topic, DEFAULT_TWIST_TOPIC)
         self.assertEqual(config.tool_frame, DEFAULT_TOOL_FRAME)
         self.assertEqual(config.watchdog_period_s, DEFAULT_WATCHDOG_PERIOD_S)
+        self.assertEqual(config.low_pass_alpha, 1.0)
+
+    def test_low_pass_alpha_must_be_in_open_closed_unit_interval(self) -> None:
+        with self.assertRaisesRegex(Gen3ViveRos2WrapperConfigError, "low_pass_alpha"):
+            Gen3ViveRos2WrapperConfig(low_pass_alpha=0.0).validate()
+
+        with self.assertRaisesRegex(Gen3ViveRos2WrapperConfigError, "low_pass_alpha"):
+            Gen3ViveRos2WrapperConfig(low_pass_alpha=1.1).validate()
+
+        Gen3ViveRos2WrapperConfig(low_pass_alpha=0.25).validate()
 
     def test_real_robot_requires_physical_deadman_and_latch(self) -> None:
         with self.assertRaisesRegex(Gen3ViveRos2WrapperConfigError, "physical_topic"):
@@ -160,6 +170,7 @@ class Gen3ViveRos2WrapperConfigTest(unittest.TestCase):
             deadman_source="physical_topic",
             physical_deadman_topic=DEFAULT_PHYSICAL_DEADMAN_TOPIC,
             calibration_path="/tmp/gen3_vive_calibration.yaml",
+            low_pass_alpha=0.25,
         )
 
         runtime = build_mapper_runtime_config(config)
@@ -167,6 +178,7 @@ class Gen3ViveRos2WrapperConfigTest(unittest.TestCase):
         self.assertFalse(runtime.dry_run)
         self.assertTrue(runtime.real_robot)
         self.assertEqual(runtime.command_backend, MOVEIT_SERVO_TWIST_BACKEND)
+        self.assertEqual(runtime.low_pass_alpha, 0.25)
 
     def test_construct_mapper_passes_wrapper_runtime_to_factory(self) -> None:
         seen: dict[str, object] = {}
@@ -446,6 +458,14 @@ class Gen3ViveWrapperCliTest(unittest.TestCase):
         self.assertNotIn("pose_topic", config)
         self.assertEqual(config["twist_topic"], DEFAULT_TWIST_TOPIC)
         self.assertEqual(config["tool_frame"], DEFAULT_TOOL_FRAME)
+        self.assertEqual(config["low_pass_alpha"], 1.0)
+
+    def test_print_config_accepts_low_pass_alpha_override(self) -> None:
+        code, output = self.run_main(["--low-pass-alpha", "0.25", "--print-config"])
+
+        self.assertEqual(code, 0)
+        config = json.loads(output)
+        self.assertEqual(config["low_pass_alpha"], 0.25)
 
     def test_cli_does_not_expose_pose_topic_override(self) -> None:
         stderr = io.StringIO()
