@@ -1,0 +1,32 @@
+# Gen3 VIVE real-robot calibration template.
+# Copy this file to .local/gen3_vive_calib/real_gen3_vive_calibration.yaml,
+# measure/edit every transform and limit, then change the review flag to true.
+# The real-robot compose wrapper refuses to run while this is false/missing.
+real_robot_calibration_reviewed: false
+
+source_frame: steamvr_world
+planning_frame: base_link
+tracker_role: gen3_tracker
+tracker_mount_frame: gen3_tool_tracker
+
+# Transform from SteamVR/source coordinates into the Gen3 planning frame.
+# Replace identity with the measured calibration before real robot use.
+T_planning_source:
+  translation: [0.0, 0.0, 0.0]
+  rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
+
+# Transform from the tracker body to the intended tool/control frame.
+# Replace identity with the measured tracker mount offset before real robot use.
+T_tool_tracker_mount:
+  translation: [0.0, 0.0, 0.0]
+  rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
+
+linear_scale: 1.0
+angular_scale: 1.0
+workspace_limits:
+  x: [-0.25, 0.25]
+  y: [-0.25, 0.25]
+  z: [-0.20, 0.20]
+max_linear_mps: 0.10
+max_angular_radps: 0.25
+stale_timeout_s: 0.10

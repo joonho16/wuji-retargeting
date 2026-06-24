@@ -24,8 +24,9 @@ Profiles:
 Examples:
   scripts/gen3_vive_compose_rm.sh full-fake
   scripts/gen3_vive_compose_rm.sh receiver
+  scripts/gen3_vive_init_real_calib.sh
   GEN3_ROBOT_IP=192.168.1.10 \
-    GEN3_VIVE_CALIBRATION_DIR=$HOME/gen3_vive_calib \
+    GEN3_VIVE_CALIBRATION_DIR=.local/gen3_vive_calib \
     GEN3_VIVE_CALIBRATION=/calib/real_gen3_vive_calibration.yaml \
     scripts/gen3_vive_compose_rm.sh full-real
 
@@ -33,8 +34,9 @@ Notes:
   - This is the compose-up equivalent of --rm: on exit it runs
     `docker compose down --remove-orphans` for this compose project.
   - If any attached service exits, the whole stack is stopped and cleaned up.
-  - Real-robot profiles fail before Docker starts unless the host calibration
-    directory and /calib/<file> mapping exist.
+  - Real-robot profiles fail before Docker starts unless the repo/host
+    calibration directory exists, /calib/<file> maps to a real file, and that
+    file contains `real_robot_calibration_reviewed: true`.
   - Do not pass -d/--detach; detached mode would be cleaned up immediately.
   - One-shot tooling commands should still use `docker compose run --rm ...`.
 USAGE
@@ -120,8 +122,15 @@ preflight_real_robot() {
   fi
 
   if [[ ! -f "$calib_host_file" ]]; then
-    echo "Calibration file is missing on the host: $calib_host_file" >&2
+    echo "Calibration file is missing on the host/repo checkout: $calib_host_file" >&2
     echo "Container path $calib_container maps to host file $calib_host_file." >&2
+    echo "Create a repo-local working file with: scripts/gen3_vive_init_real_calib.sh" >&2
+    exit 2
+  fi
+
+  if ! grep -Eq '^[[:space:]]*real_robot_calibration_reviewed:[[:space:]]*true([[:space:]]*(#.*)?)?$' "$calib_host_file"; then
+    echo "Real robot calibration is not marked reviewed: $calib_host_file" >&2
+    echo "Edit measured calibration values, then set: real_robot_calibration_reviewed: true" >&2
     exit 2
   fi
 }

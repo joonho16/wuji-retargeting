@@ -103,9 +103,10 @@ raw `docker compose up`. Compose has no `up --rm`;
 `scripts/gen3_vive_compose_rm.sh` runs `up` attached, stops the whole stack if
 any service exits, and always performs `docker compose down --remove-orphans`
 when the stack exits or you press Ctrl-C. One-shot inspection commands still use
-`docker compose run --rm ...`. Real-robot profiles also fail before Docker starts
-unless `GEN3_ROBOT_IP`, `GEN3_VIVE_CALIBRATION_DIR`, and the mapped
-`GEN3_VIVE_CALIBRATION=/calib/<file>.yaml` exist.
+`docker compose run --rm ...`. Real-robot profiles fail before Docker starts
+unless `GEN3_ROBOT_IP`, a repo/host calibration directory, the mapped
+`GEN3_VIVE_CALIBRATION=/calib/<file>.yaml`, and
+`real_robot_calibration_reviewed: true` are present.
 
 Without Docker:
 
@@ -264,14 +265,19 @@ python3 -m example.arm_teleop.gen3_vive_ros2_wrapper \
 ```
 
 Docker equivalent, including receiver, wrapper, and real Gen3 MoveIt Servo stack
-in one Compose profile. Mount the host directory that contains the reviewed real
-calibration and point `GEN3_VIVE_CALIBRATION` at the mounted `/calib` path. Do
-not paste the placeholder path; the wrapper checks the host file before Docker
-starts any real-robot service:
+in one Compose profile. Use a repo-local calibration working directory so the
+command does not depend on this agent container's `$HOME` or your host `$HOME`:
 
 ```bash
+# Creates .local/gen3_vive_calib/real_gen3_vive_calibration.yaml if missing.
+# Then edit it with measured calibration values. Do not use the template as-is.
+./scripts/gen3_vive_init_real_calib.sh
+
+# Only after review, set this inside the YAML:
+# real_robot_calibration_reviewed: true
+
 GEN3_ROBOT_IP=192.168.1.10 \
-GEN3_VIVE_CALIBRATION_DIR=$HOME/gen3_vive_calib \
+GEN3_VIVE_CALIBRATION_DIR=.local/gen3_vive_calib \
 GEN3_VIVE_CALIBRATION=/calib/real_gen3_vive_calibration.yaml \
 ./scripts/gen3_vive_compose_rm.sh full-real
 ```
