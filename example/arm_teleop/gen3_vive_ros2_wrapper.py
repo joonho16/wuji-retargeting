@@ -27,7 +27,7 @@ DEFAULT_TWIST_TOPIC = "/servo_node/delta_twist_cmds"
 DEFAULT_STATUS_TOPIC = "/gen3_vive/status"
 DEFAULT_PHYSICAL_DEADMAN_TOPIC = "/gen3_vive/physical_deadman"
 DEFAULT_PLANNING_FRAME = "base_link"
-DEFAULT_MAPPER_FACTORY = "example.arm_teleop.gen3_vive_mapper:Gen3ViveMapper"
+DEFAULT_MAPPER_FACTORY = "example.arm_teleop.gen3_vive_mapper:build_mapper_from_yaml"
 
 MOVEIT_SERVO_TWIST_BACKEND = "moveit_servo_twist"
 DIAGNOSTIC_KORTEX_TWIST_BACKEND = "diagnostic_kortex_twist"
@@ -65,6 +65,7 @@ class Gen3ViveRos2WrapperConfig:
     physical_deadman_topic: str = DEFAULT_PHYSICAL_DEADMAN_TOPIC
     planning_frame: str = DEFAULT_PLANNING_FRAME
     mapper_factory: str = DEFAULT_MAPPER_FACTORY
+    calibration_path: str | None = None
     backend: BackendName = MOVEIT_SERVO_TWIST_BACKEND
     deadman_source: DeadmanSource = "synthetic_cli"
     dry_run: bool = True
@@ -116,6 +117,10 @@ class Gen3ViveRos2WrapperConfig:
                 raise Gen3ViveRos2WrapperConfigError(
                     "synthetic deadman must not be accepted in real_robot mode"
                 )
+            if not self.calibration_path:
+                raise Gen3ViveRos2WrapperConfigError(
+                    "real_robot mode requires an explicit calibration_path"
+                )
         elif self.deadman_source == "synthetic_cli" and not self.dry_run:
             raise Gen3ViveRos2WrapperConfigError(
                 "synthetic deadman is allowed only in dry-run mode"
@@ -136,6 +141,7 @@ class MapperProtocol(Protocol):
         *,
         deadman_pressed: bool,
         real_robot_latch: bool,
+        deadman_is_physical: bool = False,
     ) -> TwistCommand | Mapping[str, Any] | None:
         """Convert one ROS2 pose message into a wrapper command or stop."""
 
@@ -192,6 +198,38 @@ def coerce_twist_command(command: TwistCommand | Mapping[str, Any] | None) -> Tw
         planning_frame=planning_frame,
         command_enabled=command_enabled,
         stop_reason=stop_reason,
+    )
+
+
+def mapper_command_to_twist_command(command: Any) -> TwistCommand:
+    """Convert mapper-core ``MapperCommand`` objects to wrapper ``TwistCommand``.
+
+    The mapper core intentionally stays ROS-free and exposes ``linear_xyz``,
+    ``angular_xyz``, ``frame_id``, ``enabled``, and ``stop_reason``.  Keeping the
+    conversion explicit prevents accidental truthiness/coercion bugs at the
+    safety boundary.
+    """
+
+    if isinstance(command, TwistCommand) or command is None or isinstance(command, Mapping):
+        return coerce_twist_command(command)
+    try:
+        linear_xyz = getattr(command, "linear_xyz")
+        angular_xyz = getattr(command, "angular_xyz")
+        planning_frame = getattr(command, "frame_id")
+        enabled = getattr(command, "enabled")
+        stop_reason = getattr(command, "stop_reason")
+    except AttributeError as exc:
+        raise Gen3ViveRos2WrapperConfigError(
+            "mapper command must be TwistCommand, mapping, None, or MapperCommand-like"
+        ) from exc
+    return coerce_twist_command(
+        {
+            "linear_xyz": linear_xyz,
+            "angular_xyz": angular_xyz,
+            "planning_frame": planning_frame,
+            "command_enabled": enabled,
+            "stop_reason": stop_reason,
+        }
     )
 
 
@@ -302,8 +340,11 @@ class Ros2Gen3ViveMapperWrapper:
                         pose_msg,
                         deadman_pressed=self._deadman_pressed,
                         real_robot_latch=self._real_robot_latch(),
+                        deadman_is_physical=config.deadman_source == "physical_topic",
                     )
-                    payload = build_twist_stamped_payload(coerce_twist_command(command))
+                    payload = build_twist_stamped_payload(
+                        mapper_command_to_twist_command(command)
+                    )
                     self._publish_twist_payload(payload)
                     self._publish_status(payload)
                 except Exception as exc:  # defensive: fail closed with zero twist.
@@ -380,6 +421,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--physical-deadman-topic", default=DEFAULT_PHYSICAL_DEADMAN_TOPIC)
     parser.add_argument("--planning-frame", default=DEFAULT_PLANNING_FRAME)
     parser.add_argument("--mapper-factory", default=DEFAULT_MAPPER_FACTORY)
+    parser.add_argument("--calibration-path", default=None)
     parser.add_argument(
         "--backend",
         choices=[MOVEIT_SERVO_TWIST_BACKEND, DIAGNOSTIC_KORTEX_TWIST_BACKEND],
@@ -422,6 +464,7 @@ def config_from_args(args: argparse.Namespace) -> Gen3ViveRos2WrapperConfig:
         physical_deadman_topic=args.physical_deadman_topic,
         planning_frame=args.planning_frame,
         mapper_factory=args.mapper_factory,
+        calibration_path=args.calibration_path,
         backend=cast(BackendName, args.backend),
         deadman_source=cast(DeadmanSource, args.deadman_source),
         dry_run=bool(args.dry_run),
@@ -449,8 +492,12 @@ def main(argv: Iterable[str] | None = None) -> int:
             print(json.dumps(config.as_json_dict(), sort_keys=True))
             return 0
 
+        if not config.calibration_path:
+            raise Gen3ViveRos2WrapperConfigError(
+                "--spin requires --calibration-path for mapper construction"
+            )
         mapper_factory = load_mapper_factory(config.mapper_factory)
-        mapper = mapper_factory()
+        mapper = mapper_factory(config.calibration_path)
         Ros2Gen3ViveMapperWrapper(config, mapper).spin()
         return 0
     except Gen3ViveRos2WrapperConfigError as exc:

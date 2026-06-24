@@ -31,10 +31,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Literal, cast
 
-try:  # Prefer the receiver constants when imported from a source checkout.
-    from example.arm_teleop.vive_udp_receiver import EXPECTED_FRAME, EXPECTED_ROLE
-except ModuleNotFoundError:  # pragma: no cover - supports direct script execution.
-    from vive_udp_receiver import EXPECTED_FRAME, EXPECTED_ROLE  # type: ignore[no-redef]
+from example.arm_teleop.vive_udp_receiver import EXPECTED_FRAME, EXPECTED_ROLE
 
 Vector3 = tuple[float, float, float]
 QuaternionXYZW = tuple[float, float, float, float]
@@ -582,6 +579,107 @@ class Gen3ViveMapperCore:
         )
 
 
+@dataclass
+class Gen3ViveMapper:
+    """Small adapter from ROS2 ``PoseStamped``-like inputs to the mapper core.
+
+    The ROS2 wrapper owns subscriptions/publishers and safety configuration.  The
+    adapter here only converts a validated ``/vive/gen3_tracker/pose`` message
+    into the dependency-light :class:`ViveTrackerPose` shape and delegates to the
+    core state machine.
+    """
+
+    core: Gen3ViveMapperCore
+    servo_ready: bool = True
+
+    @classmethod
+    def from_calibration(
+        cls,
+        calibration: Gen3ViveCalibration,
+        runtime: MapperRuntimeConfig | None = None,
+    ) -> "Gen3ViveMapper":
+        return cls(core=Gen3ViveMapperCore(calibration, runtime or MapperRuntimeConfig()))
+
+    @classmethod
+    def from_yaml_file(
+        cls,
+        path: str | Path,
+        runtime: MapperRuntimeConfig | None = None,
+    ) -> "Gen3ViveMapper":
+        return cls.from_calibration(Gen3ViveCalibration.from_yaml_file(path), runtime)
+
+    def handle_pose(
+        self,
+        pose_msg: Any,
+        *,
+        deadman_pressed: bool,
+        real_robot_latch: bool,
+        deadman_is_physical: bool = False,
+        now_monotonic_s: float | None = None,
+    ) -> MapperCommand:
+        pose = pose_stamped_like_to_tracker_pose(
+            pose_msg,
+            tracker_role=self.core.calibration.tracker_role,
+            received_monotonic_s=now_monotonic_s,
+        )
+        return self.core.update(
+            pose=pose,
+            deadman=DeadmanInput(
+                pressed=bool(deadman_pressed),
+                is_physical=bool(deadman_is_physical),
+            ),
+            now_monotonic_s=now_monotonic_s,
+            real_robot_latch=bool(real_robot_latch),
+            servo_ready=self.servo_ready,
+        )
+
+
+def build_mapper_from_yaml(path: str | Path) -> Gen3ViveMapper:
+    """Factory used by the ROS2 wrapper default ``--mapper-factory`` setting."""
+
+    return Gen3ViveMapper.from_yaml_file(path)
+
+
+def pose_stamped_like_to_tracker_pose(
+    pose_msg: Any,
+    *,
+    tracker_role: str,
+    received_monotonic_s: float | None = None,
+) -> ViveTrackerPose:
+    """Convert a ROS2 ``PoseStamped`` object or equivalent mapping to tracker pose."""
+
+    header = _child(pose_msg, "header")
+    pose = _child(pose_msg, "pose")
+    position = _child(pose, "position")
+    orientation = _child(pose, "orientation")
+    frame_id = _child(header, "frame_id")
+    if not isinstance(frame_id, str) or not frame_id.strip():
+        raise MapperError("invalid_pose", "PoseStamped header.frame_id must be non-empty")
+    return ViveTrackerPose(
+        role=tracker_role,
+        frame=frame_id.strip(),
+        position_xyz=(
+            _coerce_finite_float(_child(position, "x"), "pose.position.x"),
+            _coerce_finite_float(_child(position, "y"), "pose.position.y"),
+            _coerce_finite_float(_child(position, "z"), "pose.position.z"),
+        ),
+        quaternion_xyzw=_coerce_unit_quaternion(
+            (
+                _coerce_finite_float(_child(orientation, "x"), "pose.orientation.x"),
+                _coerce_finite_float(_child(orientation, "y"), "pose.orientation.y"),
+                _coerce_finite_float(_child(orientation, "z"), "pose.orientation.z"),
+                _coerce_finite_float(_child(orientation, "w"), "pose.orientation.w"),
+            ),
+            "pose.orientation",
+        ),
+        received_monotonic_s=(
+            time.monotonic()
+            if received_monotonic_s is None
+            else _coerce_finite_float(received_monotonic_s, "received_monotonic_s")
+        ),
+    )
+
+
 def _command_type(backend: BackendName) -> str:
     if backend == DEFAULT_BACKEND:
         return DEFAULT_COMMAND_TYPE
@@ -610,6 +708,12 @@ def _required_mapping(raw: Mapping[str, Any], field_name: str) -> Mapping[str, A
     if not isinstance(value, Mapping):
         raise MapperError("missing_calibration_field", f"{field_name!r} must be a mapping")
     return value
+
+
+def _child(value: Any, field_name: str) -> Any:
+    if isinstance(value, Mapping):
+        return value.get(field_name)
+    return getattr(value, field_name)
 
 
 def _finite_float_tuple(
@@ -775,6 +879,7 @@ __all__ = [
     "CalibrationTransform",
     "DeadmanInput",
     "Gen3ViveCalibration",
+    "Gen3ViveMapper",
     "Gen3ViveMapperCore",
     "MapperCommand",
     "MapperError",
@@ -783,4 +888,6 @@ __all__ = [
     "ToolPose",
     "ViveTrackerPose",
     "WorkspaceLimits",
+    "build_mapper_from_yaml",
+    "pose_stamped_like_to_tracker_pose",
 ]

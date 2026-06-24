@@ -57,6 +57,7 @@ class Gen3ViveRos2WrapperConfigTest(unittest.TestCase):
             real_robot_latch=True,
             deadman_source="physical_topic",
             physical_deadman_topic=DEFAULT_PHYSICAL_DEADMAN_TOPIC,
+            calibration_path="/tmp/gen3_vive_calibration.yaml",
         )
         config.validate()
 
