@@ -20,6 +20,8 @@ The default configuration is intentionally non-actuating:
 - fixed pose input topic: `/vive/gen3_tracker/pose`
 - MoveIt Servo command topic: `/servo_node/delta_twist_cmds`
 - watchdog period: `0.02` seconds
+- planning frame: `base_link`
+- tool frame for current TCP TF: `end_effector_link`
 
 With defaults, the CLI validates and prints config without importing ROS2 or
 publishing robot commands.
@@ -44,7 +46,10 @@ mode for mapper development.
 
 The wrapper publishes an immediate zero stop when a physical deadman message
 falls from pressed to released. Recovery still requires a later deadman rising
-edge and neutral recapture.
+edge and neutral recapture. In real-robot mode, a pressed deadman also requires
+current TF for `planning_frame -> tool_frame`; missing TF produces
+`TOOL_POSE_UNAVAILABLE_STOP` instead of commanding the arm from stale or
+unknown TCP feedback.
 
 ## Command backend policy
 
@@ -70,6 +75,7 @@ def handle_pose(
     deadman_pressed: bool,
     real_robot_latch: bool,
     deadman_is_physical: bool = False,
+    current_tool_pose=None,
 ): ...
 
 def poll_safety(
@@ -77,6 +83,7 @@ def poll_safety(
     deadman_pressed: bool,
     real_robot_latch: bool,
     deadman_is_physical: bool = False,
+    current_tool_pose=None,
 ): ...
 ```
 
@@ -87,7 +94,10 @@ The mapper may return either a `TwistCommand` or a mapping with
 
 The ROS2 wrapper calls `poll_safety()` from a watchdog timer even when no new
 pose arrives. This wires sender/tracking loss into the mapper stale-stop path
-instead of relying only on pose subscription callbacks.
+instead of relying only on pose subscription callbacks. When TF feedback is
+available, VIVE displacement is treated as a target TCP offset from the captured
+neutral TCP pose; the Twist command is the remaining target error, not the raw
+tracker displacement-as-velocity.
 
 ## Boundary verification
 

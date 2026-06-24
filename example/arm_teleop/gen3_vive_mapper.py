@@ -14,6 +14,7 @@ Safety boundaries implemented here:
 * stale/invalid/deadman stop with neutral recapture required for recovery,
 * fresh pose + new deadman rising edge required after every stop,
 * finite pose/quaternion, role, and frame refusal,
+* target-tool-pose following when wrappers provide current TF feedback,
 * workspace/velocity clamp plus optional low-pass filtering,
 * direct Kortex twist backend quarantined behind explicit diagnostic opt-in.
 
@@ -66,6 +67,7 @@ class StopReason(str, Enum):
     SYNTHETIC_DEADMAN_REJECTED = "SYNTHETIC_DEADMAN_REJECTED_STOP"
     SERVO_NOT_READY = "SERVO_NOT_READY_STOP"
     NEUTRAL_CAPTURED = "NEUTRAL_CAPTURED"
+    TOOL_POSE_UNAVAILABLE = "TOOL_POSE_UNAVAILABLE_STOP"
 
 
 @dataclass(frozen=True)
@@ -393,6 +395,15 @@ class Gen3ViveMapperCore:
                 role=fresh_pose.role,
                 source_frame=fresh_pose.frame,
             )
+        if self.runtime.real_robot and current_tool_pose is None:
+            return self._stop(
+                StopReason.TOOL_POSE_UNAVAILABLE,
+                now,
+                deadman_pressed=deadman.pressed,
+                require_recapture=True,
+                role=fresh_pose.role,
+                source_frame=fresh_pose.frame,
+            )
 
         if self._requires_neutral_recapture or self._neutral_tracker_pose is None:
             if not rising_edge:
@@ -421,7 +432,7 @@ class Gen3ViveMapperCore:
                 source_frame=fresh_pose.frame,
             )
 
-        command = self._active_command(fresh_pose, now)
+        command = self._active_command(fresh_pose, now, current_tool_pose=current_tool_pose)
         self._last_deadman_pressed = deadman.pressed
         return command
 
@@ -483,7 +494,13 @@ class Gen3ViveMapperCore:
         self._filtered_linear_xyz = (0.0, 0.0, 0.0)
         self._filtered_angular_xyz = (0.0, 0.0, 0.0)
 
-    def _active_command(self, pose: ViveTrackerPose, now: float) -> MapperCommand:
+    def _active_command(
+        self,
+        pose: ViveTrackerPose,
+        now: float,
+        *,
+        current_tool_pose: ToolPose | None = None,
+    ) -> MapperCommand:
         neutral = self._neutral_tracker_pose
         if neutral is None:  # Defensive; update() should route this to recapture.
             return self._stop(
@@ -500,11 +517,23 @@ class Gen3ViveMapperCore:
             self.calibration.T_planning_source.rotation_xyzw,
             source_delta,
         )
-        linear = _scale3(planning_delta, self.calibration.linear_scale)
+        target_offset = _scale3(planning_delta, self.calibration.linear_scale)
         if self._neutral_tool_pose is not None:
-            target = _add3(self._neutral_tool_pose.position_xyz, linear)
-            bounded_target = self.calibration.workspace_limits.clamp_position(target)
-            linear = _sub3(bounded_target, self._neutral_tool_pose.position_xyz)
+            target_position = _add3(self._neutral_tool_pose.position_xyz, target_offset)
+            bounded_target = self.calibration.workspace_limits.clamp_position(target_position)
+            if current_tool_pose is not None:
+                # Pose-follow mode: tracker displacement defines a target tool
+                # position.  The Twist command is proportional to remaining
+                # target error, so the robot stops once it reaches the target
+                # even if the tracker stays offset from neutral.
+                linear = _sub3(bounded_target, current_tool_pose.position_xyz)
+            else:
+                # Compatibility/rate mode for dependency-light dry-run tests or
+                # diagnostic launches without TF feedback.  Real robot mode is
+                # blocked earlier if current_tool_pose is unavailable.
+                linear = _sub3(bounded_target, self._neutral_tool_pose.position_xyz)
+        else:
+            linear = target_offset
         linear = _limit_magnitude(linear, self.calibration.max_linear_mps)
 
         delta_quat = _quat_multiply(pose.quaternion_xyzw, _quat_conjugate(neutral.quaternion_xyzw))
@@ -513,10 +542,21 @@ class Gen3ViveMapperCore:
             self.calibration.T_planning_source.rotation_xyzw,
             angular_source,
         )
-        angular = _limit_magnitude(
-            _scale3(angular_planning, self.calibration.angular_scale),
-            self.calibration.max_angular_radps,
-        )
+        target_rotvec = _scale3(angular_planning, self.calibration.angular_scale)
+        if self._neutral_tool_pose is not None and current_tool_pose is not None:
+            target_delta_quat = _rotvec_to_quat(target_rotvec)
+            target_orientation = _quat_multiply(
+                target_delta_quat,
+                self._neutral_tool_pose.quaternion_xyzw,
+            )
+            orientation_error = _quat_multiply(
+                target_orientation,
+                _quat_conjugate(current_tool_pose.quaternion_xyzw),
+            )
+            angular = _quat_to_rotvec(orientation_error)
+        else:
+            angular = target_rotvec
+        angular = _limit_magnitude(angular, self.calibration.max_angular_radps)
 
         alpha = self.runtime.low_pass_alpha
         self._filtered_linear_xyz = _blend3(self._filtered_linear_xyz, linear, alpha)
@@ -656,6 +696,7 @@ class Gen3ViveMapper:
         real_robot_latch: bool,
         deadman_is_physical: bool = False,
         now_monotonic_s: float | None = None,
+        current_tool_pose: ToolPose | None = None,
     ) -> MapperCommand:
         try:
             pose = pose_stamped_like_to_tracker_pose(
@@ -678,6 +719,7 @@ class Gen3ViveMapper:
             now_monotonic_s=now_monotonic_s,
             real_robot_latch=bool(real_robot_latch),
             servo_ready=self.servo_ready,
+            current_tool_pose=current_tool_pose,
         )
 
     def poll_safety(
@@ -687,6 +729,7 @@ class Gen3ViveMapper:
         real_robot_latch: bool,
         deadman_is_physical: bool = False,
         now_monotonic_s: float | None = None,
+        current_tool_pose: ToolPose | None = None,
     ) -> MapperCommand:
         """Run safety checks without a new pose message.
 
@@ -704,6 +747,7 @@ class Gen3ViveMapper:
             now_monotonic_s=now_monotonic_s,
             real_robot_latch=bool(real_robot_latch),
             servo_ready=self.servo_ready,
+            current_tool_pose=current_tool_pose,
         )
 
 
@@ -939,6 +983,20 @@ def _rotate_vector(quat: QuaternionXYZW, vector: Vector3) -> Vector3:
     )
     return (rotated[0], rotated[1], rotated[2])
 
+
+
+def _rotvec_to_quat(rotvec: Vector3) -> QuaternionXYZW:
+    angle = _norm3(rotvec)
+    if angle < 1.0e-12:
+        return (0.0, 0.0, 0.0, 1.0)
+    half_angle = 0.5 * angle
+    scale = math.sin(half_angle) / angle
+    return (
+        rotvec[0] * scale,
+        rotvec[1] * scale,
+        rotvec[2] * scale,
+        math.cos(half_angle),
+    )
 
 def _quat_to_rotvec(quat: QuaternionXYZW) -> Vector3:
     x, y, z, w = quat

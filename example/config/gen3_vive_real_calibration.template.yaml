@@ -15,8 +15,11 @@ T_planning_source:
   translation: [0.0, 0.0, 0.0]
   rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
 
-# Transform from the tracker body to the intended tool/control frame.
-# Replace identity with the measured tracker mount offset before real robot use.
+# Reserved transform from the tracker body to the intended tool/control frame.
+# The current relative target-pose controller validates this field but uses
+# T_planning_source.rotation_xyzw for practical command-axis mapping; keep
+# identity for handheld first-pass tests unless a later mount-correction path
+# explicitly consumes this transform.
 T_tool_tracker_mount:
   translation: [0.0, 0.0, 0.0]
   rotation_xyzw: [0.0, 0.0, 0.0, 1.0]

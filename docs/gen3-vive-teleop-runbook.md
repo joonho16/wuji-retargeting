@@ -19,7 +19,12 @@ external Windows sender
 
 The normal backend is MoveIt Servo `geometry_msgs/msg/TwistStamped`. Direct
 Kortex twist is diagnostic-only, disabled by default, and not part of the normal
-operator launch path.
+operator launch path. The wrapper reads the current TCP transform
+`planning_frame -> tool_frame` (default `base_link -> end_effector_link`) and
+uses VIVE displacement as a **target TCP offset**, not as a raw velocity. The
+published Twist is the remaining target error, clamped by the configured speed
+limits, so the robot stops when the TCP reaches the target even if the tracker
+stays offset from neutral.
 
 ## Required calibration artifact
 
@@ -51,6 +56,13 @@ stale_timeout_s: 0.10
 The mapper refuses malformed calibration fields, non-unit quaternions,
 non-finite values, inverted workspace limits, and non-positive gains/limits.
 
+`T_planning_source.rotation_xyzw` is the rotation that maps SteamVR/source axes
+into Gen3 planning-frame axes. This is the knob to fix cases like "tracker X
+should become robot -Z". `T_tool_tracker_mount` is currently kept as a validated
+calibration/reserved mount field; the relative target-pose controller does not
+use it for the linear command path, and the practical first-pass value for
+handheld tests is identity.
+
 ## Safety state machine
 
 Command output is enabled only after all gates pass:
@@ -65,7 +77,10 @@ Command output is enabled only after all gates pass:
 6. Real robot mode requires `--no-dry-run`, `--real-robot`,
    `--deadman-source physical_topic`, `--real-robot-latch`, and
    `--calibration-path`.
-7. Synthetic deadman is dry-run only.
+7. Real robot mode also requires live TF for the current tool pose. If
+   `planning_frame -> tool_frame` is unavailable while deadman is pressed, the
+   mapper emits `TOOL_POSE_UNAVAILABLE_STOP` and requires neutral recapture.
+8. Synthetic deadman is dry-run only.
 
 The ROS2 wrapper runs a watchdog timer (`--watchdog-period-s`, default `0.02`)
 that calls the mapper even when no new pose arrives, so sender/tracking loss
@@ -233,6 +248,10 @@ docker compose -f docker-compose.gen3-vive.yml --profile tools run --rm shell \
 
 docker compose -f docker-compose.gen3-vive.yml --profile tools run --rm shell \
   bash -lc 'ros2 topic echo --once --full-length --field data /gen3_vive/status std_msgs/msg/String'
+
+# Before pressing the real deadman, verify current TCP TF is available:
+docker compose -f docker-compose.gen3-vive.yml --profile tools run --rm shell \
+  bash -lc 'timeout 5 ros2 run tf2_ros tf2_echo base_link end_effector_link'
 ```
 
 Expected wiring:
@@ -245,9 +264,10 @@ Expected wiring:
   and subscriber `joint_trajectory_controller`.
 
 If no VIVE pose has arrived yet, `/gen3_vive/status` should report a stop reason
-such as `NO_FRESH_POSE_STOP`. Once the Windows sender is publishing and deadman
-is held, a fresh pose plus deadman rising edge captures neutral and then enables
-commands.
+such as `NO_FRESH_POSE_STOP`. In real robot mode, wait for
+`"tool_pose_available":true` before pressing the physical deadman. Once the
+Windows sender is publishing and deadman is held, a fresh pose plus deadman
+rising edge captures neutral and then enables commands.
 
 ### Stage 4: real robot gated run
 
@@ -286,7 +306,10 @@ GEN3_VIVE_CALIBRATION=/calib/real_gen3_vive_calibration.yaml \
 
 Keep the tracker near neutral and press the physical deadman once to capture
 neutral. Release the deadman to stop; re-pressing after release recaptures
-neutral rather than resuming from an old offset.
+neutral rather than resuming from an old offset. While held, moving the tracker
+sets a target TCP offset from the captured TCP pose. The robot should stop after
+its TCP reaches that target; it should no longer require returning the tracker to
+the first pose to stop.
 
 ## Stop conditions
 
@@ -295,6 +318,7 @@ Stop immediately on any of:
 - role or frame mismatch
 - stale `/vive/gen3_tracker/pose`
 - unexpected non-zero twist after deadman release
+- missing current TCP TF in real robot mode (`TOOL_POSE_UNAVAILABLE_STOP`)
 - missing or synthetic deadman in real robot mode
 - missing `real_robot_latch`
 - calibration mismatch or unreviewed calibration changes

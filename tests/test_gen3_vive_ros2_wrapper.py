@@ -13,6 +13,7 @@ from pathlib import Path
 from example.arm_teleop.gen3_vive_ros2_wrapper import (
     DEFAULT_PHYSICAL_DEADMAN_TOPIC,
     DEFAULT_MAPPER_FACTORY,
+    DEFAULT_TOOL_FRAME,
     DEFAULT_TWIST_TOPIC,
     DEFAULT_WATCHDOG_PERIOD_S,
     DIAGNOSTIC_KORTEX_TWIST_BACKEND,
@@ -102,6 +103,7 @@ class Gen3ViveRos2WrapperConfigTest(unittest.TestCase):
         self.assertFalse(config.real_robot_latch)
         self.assertEqual(config.backend, MOVEIT_SERVO_TWIST_BACKEND)
         self.assertEqual(config.twist_topic, DEFAULT_TWIST_TOPIC)
+        self.assertEqual(config.tool_frame, DEFAULT_TOOL_FRAME)
         self.assertEqual(config.watchdog_period_s, DEFAULT_WATCHDOG_PERIOD_S)
 
     def test_real_robot_requires_physical_deadman_and_latch(self) -> None:
@@ -443,6 +445,7 @@ class Gen3ViveWrapperCliTest(unittest.TestCase):
         self.assertEqual(config["backend"], MOVEIT_SERVO_TWIST_BACKEND)
         self.assertNotIn("pose_topic", config)
         self.assertEqual(config["twist_topic"], DEFAULT_TWIST_TOPIC)
+        self.assertEqual(config["tool_frame"], DEFAULT_TOOL_FRAME)
 
     def test_cli_does_not_expose_pose_topic_override(self) -> None:
         stderr = io.StringIO()

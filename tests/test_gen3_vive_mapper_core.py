@@ -152,6 +152,42 @@ class Gen3ViveMapperStateMachineTest(unittest.TestCase):
         self.assertEqual(command.backend, DEFAULT_BACKEND)
         self.assertEqual(command.command_type, "geometry_msgs/msg/TwistStamped")
 
+    def test_target_pose_follow_stops_after_tcp_reaches_tracker_offset_target(self) -> None:
+        core = Gen3ViveMapperCore(
+            calibration(),
+            MapperRuntimeConfig(dry_run=True, low_pass_alpha=1.0),
+        )
+        neutral_tool = ToolPose((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0))
+
+        neutral = core.update(
+            pose=pose(0.0, 0.0, 0.0, t=11.0),
+            deadman=deadman(True),
+            now_monotonic_s=11.0,
+            current_tool_pose=neutral_tool,
+        )
+        self.assertEqual(neutral.stop_reason, StopReason.NEUTRAL_CAPTURED.value)
+
+        moving = core.update(
+            pose=pose(0.02, 0.0, 0.0, t=11.01),
+            deadman=deadman(True),
+            now_monotonic_s=11.01,
+            current_tool_pose=neutral_tool,
+        )
+        self.assertTrue(moving.enabled)
+        self.assertEqual(moving.linear_xyz, (0.02, 0.0, 0.0))
+
+        reached = core.update(
+            pose=pose(0.02, 0.0, 0.0, t=11.02),
+            deadman=deadman(True),
+            now_monotonic_s=11.02,
+            current_tool_pose=ToolPose((0.02, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)),
+        )
+
+        self.assertTrue(reached.enabled)
+        self.assertIsNone(reached.stop_reason)
+        self.assertEqual(reached.linear_xyz, (0.0, 0.0, 0.0))
+        self.assertTrue(reached.zero_command)
+
     def test_workspace_clamp_and_low_pass_filter(self) -> None:
         core = Gen3ViveMapperCore(
             calibration(),
@@ -251,6 +287,41 @@ class Gen3ViveMapperStateMachineTest(unittest.TestCase):
 
         self.assertFalse(command.enabled)
         self.assertEqual(command.stop_reason, StopReason.SYNTHETIC_DEADMAN_REJECTED.value)
+
+    def test_real_robot_requires_current_tool_pose_when_deadman_pressed(self) -> None:
+        core = Gen3ViveMapperCore(
+            calibration(),
+            MapperRuntimeConfig(dry_run=False, real_robot=True),
+        )
+
+        command = core.update(
+            pose=pose(t=41.0),
+            deadman=deadman(True, physical=True),
+            now_monotonic_s=41.0,
+            real_robot_latch=True,
+            current_tool_pose=None,
+        )
+
+        self.assertFalse(command.enabled)
+        self.assertEqual(command.stop_reason, StopReason.TOOL_POSE_UNAVAILABLE.value)
+        self.assertTrue(command.needs_neutral_recapture)
+
+    def test_released_deadman_takes_priority_over_missing_tool_pose(self) -> None:
+        core = Gen3ViveMapperCore(
+            calibration(),
+            MapperRuntimeConfig(dry_run=False, real_robot=True),
+        )
+
+        command = core.update(
+            pose=pose(t=41.1),
+            deadman=deadman(False, physical=True),
+            now_monotonic_s=41.1,
+            real_robot_latch=True,
+            current_tool_pose=None,
+        )
+
+        self.assertFalse(command.enabled)
+        self.assertEqual(command.stop_reason, StopReason.DEADMAN_RELEASED.value)
 
     def test_real_robot_requires_dynamic_latch_even_with_physical_deadman(self) -> None:
         mapper = Gen3ViveMapper.from_calibration(

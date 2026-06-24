@@ -30,6 +30,7 @@ DEFAULT_TWIST_TOPIC = "/servo_node/delta_twist_cmds"
 DEFAULT_STATUS_TOPIC = "/gen3_vive/status"
 DEFAULT_PHYSICAL_DEADMAN_TOPIC = "/gen3_vive/physical_deadman"
 DEFAULT_PLANNING_FRAME = "base_link"
+DEFAULT_TOOL_FRAME = "end_effector_link"
 DEFAULT_MAPPER_FACTORY = "example.arm_teleop.gen3_vive_mapper:build_mapper_from_yaml"
 DEFAULT_WATCHDOG_PERIOD_S = 0.02
 
@@ -67,6 +68,7 @@ class Gen3ViveRos2WrapperConfig:
     status_topic: str = DEFAULT_STATUS_TOPIC
     physical_deadman_topic: str = DEFAULT_PHYSICAL_DEADMAN_TOPIC
     planning_frame: str = DEFAULT_PLANNING_FRAME
+    tool_frame: str = DEFAULT_TOOL_FRAME
     mapper_factory: str = DEFAULT_MAPPER_FACTORY
     calibration_path: str | None = None
     watchdog_period_s: float = DEFAULT_WATCHDOG_PERIOD_S
@@ -82,6 +84,7 @@ class Gen3ViveRos2WrapperConfig:
 
         _require_non_empty(self.status_topic, "status_topic")
         _require_non_empty(self.planning_frame, "planning_frame")
+        _require_non_empty(self.tool_frame, "tool_frame")
         _require_non_empty(self.mapper_factory, "mapper_factory")
         _require_positive_finite(self.watchdog_period_s, "watchdog_period_s")
 
@@ -145,6 +148,7 @@ class MapperProtocol(Protocol):
         real_robot_latch: bool,
         deadman_is_physical: bool = False,
         now_monotonic_s: float | None = None,
+        current_tool_pose: Any | None = None,
     ) -> Any:
         """Convert one ROS2 pose message into a wrapper command or stop."""
 
@@ -155,6 +159,7 @@ class MapperProtocol(Protocol):
         real_robot_latch: bool,
         deadman_is_physical: bool = False,
         now_monotonic_s: float | None = None,
+        current_tool_pose: Any | None = None,
     ) -> Any:
         """Run stale/deadman safety checks without a new pose message."""
 
@@ -388,6 +393,7 @@ class Gen3ViveSafetyLoop:
         *,
         real_robot_latch: bool,
         now_monotonic_s: float | None = None,
+        current_tool_pose: Any | None = None,
     ) -> TwistCommand:
         command = self.mapper.handle_pose(
             pose_msg,
@@ -395,6 +401,7 @@ class Gen3ViveSafetyLoop:
             real_robot_latch=bool(real_robot_latch),
             deadman_is_physical=self.config.deadman_source == "physical_topic",
             now_monotonic_s=now_monotonic_s,
+            current_tool_pose=current_tool_pose,
         )
         return mapper_command_to_twist_command(command)
 
@@ -403,12 +410,14 @@ class Gen3ViveSafetyLoop:
         *,
         real_robot_latch: bool,
         now_monotonic_s: float | None = None,
+        current_tool_pose: Any | None = None,
     ) -> TwistCommand:
         command = self.mapper.poll_safety(
             deadman_pressed=self._deadman_pressed,
             real_robot_latch=bool(real_robot_latch),
             deadman_is_physical=self.config.deadman_source == "physical_topic",
             now_monotonic_s=now_monotonic_s,
+            current_tool_pose=current_tool_pose,
         )
         return mapper_command_to_twist_command(command)
 
@@ -430,9 +439,11 @@ class Ros2Gen3ViveMapperWrapper:
             )
 
         import rclpy
+        from example.arm_teleop.gen3_vive_mapper import ToolPose
         from geometry_msgs.msg import PoseStamped, TwistStamped
         from rclpy.node import Node
         from std_msgs.msg import Bool, String
+        from tf2_ros import Buffer, TransformListener
 
         class _WrapperNode(Node):
             def __init__(self) -> None:
@@ -441,6 +452,9 @@ class Ros2Gen3ViveMapperWrapper:
                 self._safety_loop = Gen3ViveSafetyLoop(config, mapper)
                 self._twist_type = TwistStamped
                 self._status_type = String
+                self._tf_buffer = Buffer()
+                self._tf_listener = TransformListener(self._tf_buffer, self)
+                self._last_tool_pose_available = False
                 self.declare_parameter("real_robot_latch", bool(config.real_robot_latch))
                 self._twist_pub = self.create_publisher(TwistStamped, config.twist_topic, 10)
                 self._status_pub = self.create_publisher(String, config.status_topic, 10)
@@ -476,11 +490,39 @@ class Ros2Gen3ViveMapperWrapper:
             def _real_robot_latch(self) -> bool:
                 return bool(self.get_parameter("real_robot_latch").value)
 
+            def _current_tool_pose(self) -> Any | None:
+                try:
+                    transform = self._tf_buffer.lookup_transform(
+                        config.planning_frame,
+                        config.tool_frame,
+                        rclpy.time.Time(),
+                    )
+                except Exception:
+                    self._last_tool_pose_available = False
+                    return None
+                translation = transform.transform.translation
+                rotation = transform.transform.rotation
+                self._last_tool_pose_available = True
+                return ToolPose(
+                    position_xyz=(
+                        float(translation.x),
+                        float(translation.y),
+                        float(translation.z),
+                    ),
+                    quaternion_xyzw=(
+                        float(rotation.x),
+                        float(rotation.y),
+                        float(rotation.z),
+                        float(rotation.w),
+                    ),
+                )
+
             def _on_pose(self, pose_msg: Any) -> None:
                 try:
                     command = self._safety_loop.handle_pose(
                         pose_msg,
                         real_robot_latch=self._real_robot_latch(),
+                        current_tool_pose=self._current_tool_pose(),
                     )
                     self._publish_command(command)
                 except Exception as exc:  # defensive: fail closed with zero twist.
@@ -491,6 +533,7 @@ class Ros2Gen3ViveMapperWrapper:
                     self._publish_command(
                         self._safety_loop.poll_safety(
                             real_robot_latch=self._real_robot_latch(),
+                            current_tool_pose=self._current_tool_pose(),
                         )
                     )
                 except Exception as exc:  # defensive ROS callback boundary: fail closed.
@@ -537,6 +580,8 @@ class Ros2Gen3ViveMapperWrapper:
                         "dry_run": config.dry_run,
                         "real_robot": config.real_robot,
                         "real_robot_latch": self._real_robot_latch(),
+                        "tool_frame": config.tool_frame,
+                        "tool_pose_available": self._last_tool_pose_available,
                         "command_enabled": payload["command_enabled"],
                         "stop_reason": payload["stop_reason"],
                     },
@@ -573,6 +618,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--status-topic", default=DEFAULT_STATUS_TOPIC)
     parser.add_argument("--physical-deadman-topic", default=DEFAULT_PHYSICAL_DEADMAN_TOPIC)
     parser.add_argument("--planning-frame", default=DEFAULT_PLANNING_FRAME)
+    parser.add_argument("--tool-frame", default=DEFAULT_TOOL_FRAME)
     parser.add_argument("--mapper-factory", default=DEFAULT_MAPPER_FACTORY)
     parser.add_argument("--calibration-path", default=None)
     parser.add_argument("--watchdog-period-s", type=float, default=DEFAULT_WATCHDOG_PERIOD_S)
@@ -615,6 +661,7 @@ def config_from_args(args: argparse.Namespace) -> Gen3ViveRos2WrapperConfig:
         status_topic=args.status_topic,
         physical_deadman_topic=args.physical_deadman_topic,
         planning_frame=args.planning_frame,
+        tool_frame=args.tool_frame,
         mapper_factory=args.mapper_factory,
         calibration_path=args.calibration_path,
         watchdog_period_s=float(args.watchdog_period_s),
