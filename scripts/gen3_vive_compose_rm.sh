@@ -14,6 +14,7 @@ Profiles:
   wrapper      dry-run mapper/wrapper only
   servo        fake Gen3 Servo + dry-run wrapper (no receiver/deadman helper)
   full-fake    receiver + fake Gen3 Servo + dry-run wrapper + dry-run deadman
+  full-fake-rviz same as full-fake, with RViz launched through Docker/X11
   full-real    receiver + real Gen3 Servo + real-gated wrapper
   real-robot   real Gen3 Servo + real-gated wrapper, without receiver
   deadman      dry-run deadman helper only
@@ -23,6 +24,9 @@ Profiles:
 
 Examples:
   scripts/gen3_vive_compose_rm.sh full-fake
+  GEN3_VIVE_CALIBRATION_DIR=.local/gen3_vive_calib \
+    GEN3_VIVE_CALIBRATION=/calib/real_gen3_vive_calibration.yaml \
+    scripts/gen3_vive_compose_rm.sh full-fake-rviz
   scripts/gen3_vive_compose_rm.sh receiver
   scripts/gen3_vive_init_real_calib.sh
   GEN3_ROBOT_IP=192.168.1.10 \
@@ -51,7 +55,7 @@ profile=$1
 shift
 
 case "$profile" in
-  receiver|wrapper|servo|full-fake|full-real|real-robot|deadman|tools|test|debug)
+  receiver|wrapper|servo|full-fake|full-fake-rviz|full-real|real-robot|deadman|tools|test|debug)
     ;;
   *)
     echo "Unknown Gen3 VIVE compose profile: $profile" >&2

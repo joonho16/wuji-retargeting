@@ -19,6 +19,8 @@ x-gen3-vive-env: &gen3-vive-env
   GEN3_SERVO_CONFIG: ${GEN3_SERVO_CONFIG:-example/config/gen3_vive_moveit_servo.yaml}
   GEN3_SERVO_START_DELAY_S: ${GEN3_SERVO_START_DELAY_S:-8.0}
   GEN3_SERVO_AUTOSTART: ${GEN3_SERVO_AUTOSTART:-true}
+  DISPLAY: ${DISPLAY:-}
+  QT_X11_NO_MITSHM: ${QT_X11_NO_MITSHM:-1}
 
 x-gen3-vive-common: &gen3-vive-common
   build:
@@ -52,7 +54,7 @@ services:
 
   receiver:
     <<: *gen3-vive-common
-    profiles: ["receiver", "full-fake", "full-real"]
+    profiles: ["receiver", "full-fake", "full-fake-rviz", "full-real"]
     command:
       - bash
       - -lc
@@ -81,7 +83,7 @@ services:
 
   wrapper-servo-dry-run:
     <<: *gen3-vive-common
-    profiles: ["servo", "full-fake"]
+    profiles: ["servo", "full-fake", "full-fake-rviz"]
     environment:
       <<: *gen3-vive-env
       GEN3_VIVE_TWIST_TOPIC: ${GEN3_VIVE_TWIST_TOPIC:-/servo_node/delta_twist_cmds}
@@ -99,7 +101,7 @@ services:
 
   deadman-hold:
     <<: *gen3-vive-common
-    profiles: ["full-fake", "deadman"]
+    profiles: ["full-fake", "full-fake-rviz", "deadman"]
     environment:
       <<: *gen3-vive-env
       GEN3_VIVE_DEADMAN_DELAY_S: ${GEN3_VIVE_DEADMAN_DELAY_S:-5}
@@ -118,7 +120,23 @@ services:
     environment:
       <<: *gen3-vive-env
       GEN3_USE_FAKE_HARDWARE: "true"
-      GEN3_LAUNCH_RVIZ: "false"
+      GEN3_LAUNCH_RVIZ: ${GEN3_LAUNCH_RVIZ:-false}
+    command:
+      - bash
+      - -lc
+      - >
+        exec python3 example/arm_teleop/gen3_vive_servo_stack.py
+
+  gen3-servo-fake-rviz:
+    <<: *gen3-vive-common
+    profiles: ["full-fake-rviz", "rviz"]
+    environment:
+      <<: *gen3-vive-env
+      GEN3_USE_FAKE_HARDWARE: "true"
+      GEN3_LAUNCH_RVIZ: "true"
+    volumes:
+      - ${GEN3_VIVE_CALIBRATION_DIR:-./example/config}:/calib:ro
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
     command:
       - bash
       - -lc
@@ -131,7 +149,7 @@ services:
     environment:
       <<: *gen3-vive-env
       GEN3_USE_FAKE_HARDWARE: "false"
-      GEN3_LAUNCH_RVIZ: "false"
+      GEN3_LAUNCH_RVIZ: ${GEN3_LAUNCH_RVIZ:-false}
     command:
       - bash
       - -lc

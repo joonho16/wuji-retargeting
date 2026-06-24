@@ -238,6 +238,22 @@ command:
 ./scripts/gen3_vive_compose_rm.sh full-fake
 ```
 
+To view the fake Gen3 in RViz from Docker on a Linux desktop, allow local X11
+connections for the container, run the RViz profile, then revoke the permission
+afterward:
+
+```bash
+xhost +local:root
+GEN3_VIVE_CALIBRATION_DIR=.local/gen3_vive_calib \
+GEN3_VIVE_CALIBRATION=/calib/real_gen3_vive_calibration.yaml \
+./scripts/gen3_vive_compose_rm.sh full-fake-rviz
+xhost -local:root
+```
+
+If RViz cannot open, keep using `full-fake` and inspect `/joint_states`,
+`/tf`, `/servo_node/delta_twist_cmds`, and
+`/joint_trajectory_controller/joint_trajectory` from the tools shell.
+
 This starts:
 
 - `receiver`: Windows UDP JSON -> `/vive/gen3_tracker/pose`
