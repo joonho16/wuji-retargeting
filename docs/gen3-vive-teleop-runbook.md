@@ -98,6 +98,12 @@ hand/camera/glove dependency set. The repository source is baked into the image
 so the host does not need ROS2 or a Python environment; rebuild the image after
 editing source files.
 
+Long-running Compose stacks should be started through the repository wrapper, not
+raw `docker compose up`. Compose has no `up --rm`;
+`scripts/gen3_vive_compose_rm.sh` runs `up` attached and always performs
+`docker compose down --remove-orphans` when the stack exits or you press Ctrl-C.
+One-shot inspection commands still use `docker compose run --rm ...`.
+
 Without Docker:
 
 ```bash
@@ -135,7 +141,7 @@ Docker equivalent:
 
 ```bash
 # Terminal A: receive Windows UDP on host network and publish ROS2 PoseStamped.
-docker compose -f docker-compose.gen3-vive.yml --profile receiver up receiver
+./scripts/gen3_vive_compose_rm.sh receiver
 
 # Terminal B: inspect ROS2 topics without host ROS2 installed.
 docker compose -f docker-compose.gen3-vive.yml --profile tools run --rm shell \
@@ -177,10 +183,10 @@ Docker dry-run wrapper:
 
 ```bash
 # Terminal A: keep receiver running.
-docker compose -f docker-compose.gen3-vive.yml --profile receiver up receiver
+./scripts/gen3_vive_compose_rm.sh receiver
 
 # Terminal B: start mapper/wrapper with synthetic deadman and debug twist topic.
-docker compose -f docker-compose.gen3-vive.yml --profile wrapper up wrapper-dry-run
+./scripts/gen3_vive_compose_rm.sh wrapper
 
 # Terminal C: inspect generated stop/command status and debug twist.
 docker compose -f docker-compose.gen3-vive.yml --profile tools run --rm shell \
@@ -199,7 +205,7 @@ For a host with no ROS2 install, run the full fake stack with one Compose
 command:
 
 ```bash
-docker compose -f docker-compose.gen3-vive.yml --profile full-fake up --build
+./scripts/gen3_vive_compose_rm.sh full-fake
 ```
 
 This starts:
@@ -262,7 +268,7 @@ calibration and point `GEN3_VIVE_CALIBRATION` at the mounted path:
 GEN3_ROBOT_IP=192.168.1.10 \
 GEN3_VIVE_CALIBRATION_DIR=/absolute/host/calibration_dir \
 GEN3_VIVE_CALIBRATION=/calib/real_gen3_vive_calibration.yaml \
-docker compose -f docker-compose.gen3-vive.yml --profile full-real up --build
+./scripts/gen3_vive_compose_rm.sh full-real
 ```
 
 Keep the tracker near neutral and press the physical deadman once to capture
