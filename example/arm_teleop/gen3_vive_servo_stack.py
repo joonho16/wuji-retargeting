@@ -164,7 +164,7 @@ def main() -> int:
     launch_service.include_launch_description(launch_description)
 
     def _shutdown(_signum: int, _frame: Any) -> None:
-        launch_service.shutdown()
+        launch_service.shutdown(force_sync=True)
 
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
