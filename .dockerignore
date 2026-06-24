@@ -1,0 +1,17 @@
+.git
+.omx
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.DS_Store
+*.egg-info/
+dist/
+build/
+*.egg
+*.whl
+logs/
+*.log
+*.tmp
+MUJOCO_LOG.TXT

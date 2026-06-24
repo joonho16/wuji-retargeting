@@ -76,6 +76,30 @@ immediate zero stop before waiting for the next pose.
 
 ### Stage 0: local verification
 
+If the host has no ROS2 installation, use the Docker Compose environment:
+
+```bash
+cd /workspace/wujihand/.omx/worktrees/gen3-vive-teleop
+
+# Optional: edit defaults such as VIVE_UDP_PORT or ROS_DOMAIN_ID.
+cp .env.gen3-vive.example .env
+
+# Build the minimal ROS2 Humble image for receiver/wrapper tests.
+docker compose -f docker-compose.gen3-vive.yml --profile tools build shell
+
+# Run the same Python verification inside the ROS2 container.
+docker compose -f docker-compose.gen3-vive.yml --profile test run --rm test
+```
+
+The image intentionally installs only the Gen3 VIVE path dependencies:
+ROS2 `rclpy` from the Humble base image, `geometry_msgs`, `std_msgs`, `PyYAML`,
+and network/debug tools. It does not install the full Wuji hand/camera/glove
+dependency set. The repository source is baked into the image so the host does
+not need ROS2 or a Python environment; rebuild the image after editing source
+files.
+
+Without Docker:
+
 ```bash
 python3 -m unittest discover -s tests -v
 git ls-files '*.py' | xargs python3 -m py_compile
@@ -107,6 +131,29 @@ Stop if `header.frame_id` is not `steamvr_world`, topic is not
 `/vive/gen3_tracker/pose`, packets are stale, or diagnostics show role/frame
 mismatch.
 
+Docker equivalent:
+
+```bash
+# Terminal A: receive Windows UDP on host network and publish ROS2 PoseStamped.
+docker compose -f docker-compose.gen3-vive.yml --profile receiver up receiver
+
+# Terminal B: inspect ROS2 topics without host ROS2 installed.
+docker compose -f docker-compose.gen3-vive.yml --profile tools run --rm shell \
+  bash -lc 'ros2 topic hz /vive/gen3_tracker/pose'
+
+docker compose -f docker-compose.gen3-vive.yml --profile tools run --rm shell \
+  bash -lc 'ros2 topic echo /vive/gen3_tracker/pose --once'
+
+docker compose -f docker-compose.gen3-vive.yml --profile tools run --rm shell \
+  bash -lc 'ros2 topic echo /vive/gen3_tracker/status --once'
+```
+
+If no packets arrive:
+
+```bash
+docker compose -f docker-compose.gen3-vive.yml --profile debug run --rm udp-debug
+```
+
 ### Stage 2: dry-run mapper/wrapper
 
 Dry-run config should print without ROS2 imports or actuation:
@@ -125,6 +172,26 @@ Confirm:
 
 Use dry-run tests and logs to confirm neutral capture, stale stop, clamp/filter,
 and deadman release behavior before enabling any robot-side Servo stack.
+
+Docker dry-run wrapper:
+
+```bash
+# Terminal A: keep receiver running.
+docker compose -f docker-compose.gen3-vive.yml --profile receiver up receiver
+
+# Terminal B: start mapper/wrapper with synthetic deadman and debug twist topic.
+docker compose -f docker-compose.gen3-vive.yml --profile wrapper up wrapper-dry-run
+
+# Terminal C: inspect generated stop/command status and debug twist.
+docker compose -f docker-compose.gen3-vive.yml --profile tools run --rm shell \
+  bash -lc 'ros2 topic echo /gen3_vive/status'
+
+docker compose -f docker-compose.gen3-vive.yml --profile tools run --rm shell \
+  bash -lc 'ros2 topic echo /gen3_vive/debug_twist'
+```
+
+`example/config/gen3_vive_dry_run_calibration.yaml` is identity calibration for
+container smoke tests only. It is not a reviewed real-robot calibration.
 
 ### Stage 3: MoveIt Servo simulation / no hardware motion
 
@@ -145,6 +212,18 @@ python3 -m example.arm_teleop.gen3_vive_ros2_wrapper \
   --physical-deadman-topic /gen3_vive/physical_deadman \
   --real-robot-latch \
   --calibration-path /path/to/gen3_vive_calibration.yaml
+```
+
+Docker equivalent, after a Gen3 MoveIt Servo stack is already available on the
+same `ROS_DOMAIN_ID`. Mount the host directory that contains the reviewed real
+calibration and point `GEN3_VIVE_CALIBRATION` at the mounted path:
+
+```bash
+docker compose -f docker-compose.gen3-vive.yml --profile real-robot run --rm \
+  -v /absolute/host/calibration_dir:/calib:ro \
+  -e GEN3_VIVE_CALIBRATION=/calib/real_gen3_vive_calibration.yaml \
+  -e GEN3_VIVE_TWIST_TOPIC=/servo_node/delta_twist_cmds \
+  wrapper-real
 ```
 
 Keep the tracker near neutral and press the physical deadman once to capture

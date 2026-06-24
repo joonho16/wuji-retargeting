@@ -1,0 +1,21 @@
+# Dry-run identity calibration for Docker/receiver/wrapper smoke tests only.
+# Do not use this file for real Gen3 motion.
+source_frame: steamvr_world
+planning_frame: base_link
+tracker_role: gen3_tracker
+tracker_mount_frame: gen3_tool_tracker
+T_planning_source:
+  translation: [0.0, 0.0, 0.0]
+  rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
+T_tool_tracker_mount:
+  translation: [0.0, 0.0, 0.0]
+  rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
+linear_scale: 1.0
+angular_scale: 1.0
+workspace_limits:
+  x: [-0.25, 0.25]
+  y: [-0.25, 0.25]
+  z: [-0.20, 0.20]
+max_linear_mps: 0.10
+max_angular_radps: 0.25
+stale_timeout_s: 0.10
