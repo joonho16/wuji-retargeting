@@ -14,8 +14,10 @@ from example.arm_teleop.gen3_vive_ros2_wrapper import (
     DEFAULT_PHYSICAL_DEADMAN_TOPIC,
     DEFAULT_MAPPER_FACTORY,
     DEFAULT_TWIST_TOPIC,
+    DEFAULT_WATCHDOG_PERIOD_S,
     DIAGNOSTIC_KORTEX_TWIST_BACKEND,
     MOVEIT_SERVO_TWIST_BACKEND,
+    Gen3ViveSafetyLoop,
     Gen3ViveRos2WrapperConfig,
     Gen3ViveRos2WrapperConfigError,
     TwistCommand,
@@ -25,6 +27,68 @@ from example.arm_teleop.gen3_vive_ros2_wrapper import (
     load_mapper_factory,
     main,
 )
+from example.arm_teleop.gen3_vive_mapper import (
+    Gen3ViveCalibration,
+    Gen3ViveMapper,
+    MapperRuntimeConfig,
+    StopReason,
+)
+
+
+def calibration() -> Gen3ViveCalibration:
+    return Gen3ViveCalibration.from_mapping(
+        {
+            "source_frame": "steamvr_world",
+            "planning_frame": "base_link",
+            "tracker_role": "gen3_tracker",
+            "tracker_mount_frame": "gen3_tool_tracker",
+            "T_planning_source": {
+                "translation": [0.0, 0.0, 0.0],
+                "rotation_xyzw": [0.0, 0.0, 0.0, 1.0],
+            },
+            "T_tool_tracker_mount": {
+                "translation": [0.0, 0.0, 0.0],
+                "rotation_xyzw": [0.0, 0.0, 0.0, 1.0],
+            },
+            "linear_scale": 1.0,
+            "angular_scale": 1.0,
+            "workspace_limits": {
+                "x": [-0.05, 0.05],
+                "y": [-0.05, 0.05],
+                "z": [-0.05, 0.05],
+            },
+            "max_linear_mps": 0.2,
+            "max_angular_radps": 0.5,
+            "stale_timeout_s": 0.1,
+        }
+    )
+
+
+def pose_msg(
+    x: float = 0.0,
+    *,
+    frame: str = "steamvr_world",
+    quat_w: float = 1.0,
+) -> dict[str, object]:
+    return {
+        "header": {"frame_id": frame},
+        "pose": {
+            "position": {"x": x, "y": 0.0, "z": 0.0},
+            "orientation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": quat_w},
+        },
+    }
+
+
+class FakeMapper:
+    def handle_pose(self, *args: object, **kwargs: object) -> TwistCommand:
+        return TwistCommand(linear_xyz=(0.0, 0.0, 0.0))
+
+    def poll_safety(self, *args: object, **kwargs: object) -> TwistCommand:
+        return TwistCommand(
+            linear_xyz=(0.0, 0.0, 0.0),
+            command_enabled=False,
+            stop_reason="fake_stop",
+        )
 
 
 class Gen3ViveRos2WrapperConfigTest(unittest.TestCase):
@@ -38,6 +102,7 @@ class Gen3ViveRos2WrapperConfigTest(unittest.TestCase):
         self.assertFalse(config.real_robot_latch)
         self.assertEqual(config.backend, MOVEIT_SERVO_TWIST_BACKEND)
         self.assertEqual(config.twist_topic, DEFAULT_TWIST_TOPIC)
+        self.assertEqual(config.watchdog_period_s, DEFAULT_WATCHDOG_PERIOD_S)
 
     def test_real_robot_requires_physical_deadman_and_latch(self) -> None:
         with self.assertRaisesRegex(Gen3ViveRos2WrapperConfigError, "physical_topic"):
@@ -115,13 +180,22 @@ class Gen3ViveRos2WrapperConfigTest(unittest.TestCase):
         def factory(path: str, runtime: object) -> object:
             seen["path"] = path
             seen["runtime"] = runtime
-            return object()
+            return FakeMapper()
 
         mapper = construct_mapper_with_factory(config, factory)
 
         self.assertIsNotNone(mapper)
         self.assertEqual(seen["path"], "/tmp/gen3_vive_calibration.yaml")
         self.assertTrue(getattr(seen["runtime"], "real_robot"))
+
+    def test_construct_mapper_requires_watchdog_capable_mapper(self) -> None:
+        config = Gen3ViveRos2WrapperConfig(calibration_path="/tmp/calibration.yaml")
+
+        def factory(path: str, runtime: object) -> object:
+            return object()
+
+        with self.assertRaisesRegex(Gen3ViveRos2WrapperConfigError, "poll_safety"):
+            construct_mapper_with_factory(config, factory)
 
     def test_default_mapper_factory_imports_from_documented_filename_launch_model(self) -> None:
         repo_root = Path(__file__).resolve().parents[1]
@@ -157,6 +231,130 @@ print(callable(factory))
         )
 
         self.assertEqual(completed.stdout.strip(), "True")
+
+
+class Gen3ViveSafetyLoopTest(unittest.TestCase):
+    def test_watchdog_enforces_stale_stop_without_new_pose(self) -> None:
+        mapper = Gen3ViveMapper.from_calibration(
+            calibration(),
+            MapperRuntimeConfig(dry_run=True),
+        )
+        loop = Gen3ViveSafetyLoop(
+            Gen3ViveRos2WrapperConfig(synthetic_deadman_pressed=True),
+            mapper,
+        )
+
+        neutral = loop.handle_pose(
+            pose_msg(0.0),
+            real_robot_latch=False,
+            now_monotonic_s=10.0,
+        )
+        self.assertTrue(neutral.command_enabled)
+        self.assertEqual(neutral.stop_reason, StopReason.NEUTRAL_CAPTURED.value)
+
+        active = loop.handle_pose(
+            pose_msg(0.02),
+            real_robot_latch=False,
+            now_monotonic_s=10.01,
+        )
+        self.assertTrue(active.command_enabled)
+
+        stale = loop.poll_safety(
+            real_robot_latch=False,
+            now_monotonic_s=10.2,
+        )
+        self.assertFalse(stale.command_enabled)
+        self.assertEqual(stale.stop_reason, StopReason.STALE.value)
+
+        still_held = loop.handle_pose(
+            pose_msg(0.02),
+            real_robot_latch=False,
+            now_monotonic_s=10.21,
+        )
+        self.assertFalse(still_held.command_enabled)
+        self.assertEqual(
+            still_held.stop_reason,
+            StopReason.WAITING_FOR_NEUTRAL_RECAPTURE.value,
+        )
+
+    def test_deadman_release_publishes_immediate_zero_stop_and_requires_recapture(self) -> None:
+        mapper = Gen3ViveMapper.from_calibration(
+            calibration(),
+            MapperRuntimeConfig(dry_run=True),
+        )
+        loop = Gen3ViveSafetyLoop(
+            Gen3ViveRos2WrapperConfig(synthetic_deadman_pressed=True),
+            mapper,
+        )
+        loop.handle_pose(pose_msg(0.0), real_robot_latch=False, now_monotonic_s=20.0)
+        active = loop.handle_pose(
+            pose_msg(0.02),
+            real_robot_latch=False,
+            now_monotonic_s=20.01,
+        )
+        self.assertTrue(active.command_enabled)
+
+        stopped = loop.update_deadman(
+            False,
+            real_robot_latch=False,
+            now_monotonic_s=20.02,
+        )
+        self.assertIsNotNone(stopped)
+        assert stopped is not None
+        self.assertFalse(stopped.command_enabled)
+        self.assertEqual(stopped.stop_reason, StopReason.DEADMAN_RELEASED.value)
+
+        waiting = loop.handle_pose(
+            pose_msg(0.02),
+            real_robot_latch=False,
+            now_monotonic_s=20.03,
+        )
+        self.assertFalse(waiting.command_enabled)
+
+        self.assertIsNone(loop.update_deadman(True, real_robot_latch=False))
+        recaptured = loop.handle_pose(
+            pose_msg(0.02),
+            real_robot_latch=False,
+            now_monotonic_s=20.04,
+        )
+        self.assertTrue(recaptured.command_enabled)
+        self.assertEqual(recaptured.stop_reason, StopReason.NEUTRAL_CAPTURED.value)
+
+    def test_invalid_pose_stop_requires_release_and_repress(self) -> None:
+        mapper = Gen3ViveMapper.from_calibration(
+            calibration(),
+            MapperRuntimeConfig(dry_run=True),
+        )
+        loop = Gen3ViveSafetyLoop(
+            Gen3ViveRos2WrapperConfig(synthetic_deadman_pressed=True),
+            mapper,
+        )
+        loop.handle_pose(pose_msg(0.0), real_robot_latch=False, now_monotonic_s=30.0)
+        active = loop.handle_pose(
+            pose_msg(0.02),
+            real_robot_latch=False,
+            now_monotonic_s=30.01,
+        )
+        self.assertTrue(active.command_enabled)
+
+        invalid = loop.handle_pose(
+            pose_msg(0.02, quat_w=2.0),
+            real_robot_latch=False,
+            now_monotonic_s=30.02,
+        )
+        self.assertFalse(invalid.command_enabled)
+        self.assertEqual(invalid.stop_reason, StopReason.INVALID_POSE.value)
+
+        still_held = loop.handle_pose(
+            pose_msg(0.03),
+            real_robot_latch=False,
+            now_monotonic_s=30.03,
+        )
+        self.assertFalse(still_held.command_enabled)
+        self.assertEqual(
+            still_held.stop_reason,
+            StopReason.WAITING_FOR_NEUTRAL_RECAPTURE.value,
+        )
 
 
 class Gen3ViveTwistStampedPayloadTest(unittest.TestCase):

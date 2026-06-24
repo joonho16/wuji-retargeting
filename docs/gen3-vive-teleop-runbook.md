@@ -67,6 +67,11 @@ Command output is enabled only after all gates pass:
    `--calibration-path`.
 7. Synthetic deadman is dry-run only.
 
+The ROS2 wrapper runs a watchdog timer (`--watchdog-period-s`, default `0.02`)
+that calls the mapper even when no new pose arrives, so sender/tracking loss
+reaches the stale-stop path. A physical deadman falling edge publishes an
+immediate zero stop before waiting for the next pose.
+
 ## Staged bring-up
 
 ### Stage 0: local verification

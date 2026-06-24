@@ -19,6 +19,7 @@ The default configuration is intentionally non-actuating:
 - `backend: moveit_servo_twist`
 - fixed pose input topic: `/vive/gen3_tracker/pose`
 - MoveIt Servo command topic: `/servo_node/delta_twist_cmds`
+- watchdog period: `0.02` seconds
 
 With defaults, the CLI validates and prints config without importing ROS2 or
 publishing robot commands.
@@ -41,6 +42,10 @@ are true:
 the optional wrapper node. Synthetic deadman input is accepted only in dry-run
 mode for mapper development.
 
+The wrapper publishes an immediate zero stop when a physical deadman message
+falls from pressed to released. Recovery still requires a later deadman rising
+edge and neutral recapture.
+
 ## Command backend policy
 
 The default backend is MoveIt Servo `TwistStamped`. The wrapper exposes a
@@ -55,12 +60,19 @@ error. The only runnable wrapper command backend is MoveIt Servo
 
 ## Mapper integration contract
 
-Worker-1 owns the dependency-light mapper core. The wrapper accepts an injected
-mapper object implementing:
+The dependency-light mapper core is injected into the ROS2 wrapper through a
+small safety-loop protocol:
 
 ```python
 def handle_pose(
     pose_msg,
+    *,
+    deadman_pressed: bool,
+    real_robot_latch: bool,
+    deadman_is_physical: bool = False,
+): ...
+
+def poll_safety(
     *,
     deadman_pressed: bool,
     real_robot_latch: bool,
@@ -72,6 +84,10 @@ The mapper may return either a `TwistCommand` or a mapping with
 `linear_xyz`, `angular_xyz`, `planning_frame`, `command_enabled`, and
 `stop_reason`. A disabled or missing command is converted to a zero
 `TwistStamped` payload so MoveIt Servo can receive an explicit stop.
+
+The ROS2 wrapper calls `poll_safety()` from a watchdog timer even when no new
+pose arrives. This wires sender/tracking loss into the mapper stale-stop path
+instead of relying only on pose subscription callbacks.
 
 ## Boundary verification
 

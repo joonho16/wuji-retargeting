@@ -426,13 +426,23 @@ class Gen3ViveMapperCore:
     def neutral_tracker_pose(self) -> ViveTrackerPose | None:
         return self._neutral_tracker_pose
 
-    def force_stop(self, reason: StopReason = StopReason.DEADMAN_RELEASED) -> MapperCommand:
+    def force_stop(
+        self,
+        reason: StopReason = StopReason.DEADMAN_RELEASED,
+        *,
+        deadman_pressed: bool = False,
+        now_monotonic_s: float | None = None,
+    ) -> MapperCommand:
         """Explicit stop hook for wrappers that receive an external safety event."""
 
+        now = time.monotonic() if now_monotonic_s is None else _coerce_finite_float(
+            now_monotonic_s,
+            "now_monotonic_s",
+        )
         return self._stop(
             reason,
-            time.monotonic(),
-            deadman_pressed=False,
+            now,
+            deadman_pressed=bool(deadman_pressed),
             require_recapture=True,
         )
 
@@ -617,13 +627,46 @@ class Gen3ViveMapper:
         deadman_is_physical: bool = False,
         now_monotonic_s: float | None = None,
     ) -> MapperCommand:
-        pose = pose_stamped_like_to_tracker_pose(
-            pose_msg,
-            tracker_role=self.core.calibration.tracker_role,
-            received_monotonic_s=now_monotonic_s,
-        )
+        try:
+            pose = pose_stamped_like_to_tracker_pose(
+                pose_msg,
+                tracker_role=self.core.calibration.tracker_role,
+                received_monotonic_s=now_monotonic_s,
+            )
+        except MapperError:
+            return self.core.force_stop(
+                StopReason.INVALID_POSE,
+                deadman_pressed=bool(deadman_pressed),
+                now_monotonic_s=now_monotonic_s,
+            )
         return self.core.update(
             pose=pose,
+            deadman=DeadmanInput(
+                pressed=bool(deadman_pressed),
+                is_physical=bool(deadman_is_physical),
+            ),
+            now_monotonic_s=now_monotonic_s,
+            real_robot_latch=bool(real_robot_latch),
+            servo_ready=self.servo_ready,
+        )
+
+    def poll_safety(
+        self,
+        *,
+        deadman_pressed: bool,
+        real_robot_latch: bool,
+        deadman_is_physical: bool = False,
+        now_monotonic_s: float | None = None,
+    ) -> MapperCommand:
+        """Run safety checks without a new pose message.
+
+        ROS2 pose subscriptions are event-driven, so sender/tracking loss must
+        still call into the mapper periodically to turn stale poses into an
+        explicit zero command and force neutral recapture.
+        """
+
+        return self.core.update(
+            pose=None,
             deadman=DeadmanInput(
                 pressed=bool(deadman_pressed),
                 is_physical=bool(deadman_is_physical),

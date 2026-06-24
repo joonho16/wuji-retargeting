@@ -31,6 +31,7 @@ DEFAULT_STATUS_TOPIC = "/gen3_vive/status"
 DEFAULT_PHYSICAL_DEADMAN_TOPIC = "/gen3_vive/physical_deadman"
 DEFAULT_PLANNING_FRAME = "base_link"
 DEFAULT_MAPPER_FACTORY = "example.arm_teleop.gen3_vive_mapper:build_mapper_from_yaml"
+DEFAULT_WATCHDOG_PERIOD_S = 0.02
 
 MOVEIT_SERVO_TWIST_BACKEND = "moveit_servo_twist"
 DIAGNOSTIC_KORTEX_TWIST_BACKEND = "diagnostic_kortex_twist"
@@ -68,6 +69,7 @@ class Gen3ViveRos2WrapperConfig:
     planning_frame: str = DEFAULT_PLANNING_FRAME
     mapper_factory: str = DEFAULT_MAPPER_FACTORY
     calibration_path: str | None = None
+    watchdog_period_s: float = DEFAULT_WATCHDOG_PERIOD_S
     backend: BackendName = MOVEIT_SERVO_TWIST_BACKEND
     deadman_source: DeadmanSource = "synthetic_cli"
     dry_run: bool = True
@@ -81,6 +83,7 @@ class Gen3ViveRos2WrapperConfig:
         _require_non_empty(self.status_topic, "status_topic")
         _require_non_empty(self.planning_frame, "planning_frame")
         _require_non_empty(self.mapper_factory, "mapper_factory")
+        _require_positive_finite(self.watchdog_period_s, "watchdog_period_s")
 
         if self.backend == MOVEIT_SERVO_TWIST_BACKEND:
             _require_non_empty(self.twist_topic, "twist_topic")
@@ -141,13 +144,31 @@ class MapperProtocol(Protocol):
         deadman_pressed: bool,
         real_robot_latch: bool,
         deadman_is_physical: bool = False,
-    ) -> TwistCommand | Mapping[str, Any] | None:
+        now_monotonic_s: float | None = None,
+    ) -> Any:
         """Convert one ROS2 pose message into a wrapper command or stop."""
+
+    def poll_safety(
+        self,
+        *,
+        deadman_pressed: bool,
+        real_robot_latch: bool,
+        deadman_is_physical: bool = False,
+        now_monotonic_s: float | None = None,
+    ) -> Any:
+        """Run stale/deadman safety checks without a new pose message."""
 
 
 def _require_non_empty(value: str, field_name: str) -> None:
     if not isinstance(value, str) or not value.strip():
         raise Gen3ViveRos2WrapperConfigError(f"{field_name} must be non-empty")
+
+
+def _require_positive_finite(value: float, field_name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise Gen3ViveRos2WrapperConfigError(f"{field_name} must be a positive number")
+    if not math.isfinite(float(value)) or float(value) <= 0.0:
+        raise Gen3ViveRos2WrapperConfigError(f"{field_name} must be positive and finite")
 
 
 def _finite_xyz(values: Any, field_name: str) -> tuple[float, float, float]:
@@ -319,7 +340,77 @@ def construct_mapper_with_factory(
         )
     runtime = build_mapper_runtime_config(config)
     mapper = mapper_factory(config.calibration_path, runtime)
+    _validate_mapper_protocol(mapper)
     return cast(MapperProtocol, mapper)
+
+
+def _validate_mapper_protocol(mapper: Any) -> None:
+    missing = [
+        method_name
+        for method_name in ("handle_pose", "poll_safety")
+        if not callable(getattr(mapper, method_name, None))
+    ]
+    if missing:
+        raise Gen3ViveRos2WrapperConfigError(
+            f"mapper missing required method(s): {', '.join(missing)}"
+        )
+
+
+@dataclass
+class Gen3ViveSafetyLoop:
+    """Dependency-light wrapper safety loop used by the ROS2 node and tests."""
+
+    config: Gen3ViveRos2WrapperConfig
+    mapper: MapperProtocol
+
+    def __post_init__(self) -> None:
+        self._deadman_pressed = bool(self.config.synthetic_deadman_pressed)
+
+    def update_deadman(
+        self,
+        pressed: bool,
+        *,
+        real_robot_latch: bool,
+        now_monotonic_s: float | None = None,
+    ) -> TwistCommand | None:
+        was_pressed = self._deadman_pressed
+        self._deadman_pressed = bool(pressed)
+        if was_pressed and not self._deadman_pressed:
+            return self.poll_safety(
+                real_robot_latch=real_robot_latch,
+                now_monotonic_s=now_monotonic_s,
+            )
+        return None
+
+    def handle_pose(
+        self,
+        pose_msg: Any,
+        *,
+        real_robot_latch: bool,
+        now_monotonic_s: float | None = None,
+    ) -> TwistCommand:
+        command = self.mapper.handle_pose(
+            pose_msg,
+            deadman_pressed=self._deadman_pressed,
+            real_robot_latch=bool(real_robot_latch),
+            deadman_is_physical=self.config.deadman_source == "physical_topic",
+            now_monotonic_s=now_monotonic_s,
+        )
+        return mapper_command_to_twist_command(command)
+
+    def poll_safety(
+        self,
+        *,
+        real_robot_latch: bool,
+        now_monotonic_s: float | None = None,
+    ) -> TwistCommand:
+        command = self.mapper.poll_safety(
+            deadman_pressed=self._deadman_pressed,
+            real_robot_latch=bool(real_robot_latch),
+            deadman_is_physical=self.config.deadman_source == "physical_topic",
+            now_monotonic_s=now_monotonic_s,
+        )
+        return mapper_command_to_twist_command(command)
 
 
 class Ros2Gen3ViveMapperWrapper:
@@ -347,14 +438,17 @@ class Ros2Gen3ViveMapperWrapper:
             def __init__(self) -> None:
                 super().__init__("gen3_vive_mapper_wrapper")
                 self._config = config
-                self._mapper = mapper
+                self._safety_loop = Gen3ViveSafetyLoop(config, mapper)
                 self._twist_type = TwistStamped
                 self._status_type = String
-                self._deadman_pressed = bool(config.synthetic_deadman_pressed)
                 self.declare_parameter("real_robot_latch", bool(config.real_robot_latch))
                 self._twist_pub = self.create_publisher(TwistStamped, config.twist_topic, 10)
                 self._status_pub = self.create_publisher(String, config.status_topic, 10)
                 self.create_subscription(PoseStamped, DEFAULT_POSE_TOPIC, self._on_pose, 10)
+                self._watchdog_timer = self.create_timer(
+                    config.watchdog_period_s,
+                    self._on_watchdog,
+                )
                 if config.deadman_source == "physical_topic":
                     self.create_subscription(
                         Bool,
@@ -369,37 +463,57 @@ class Ros2Gen3ViveMapperWrapper:
                 )
 
             def _on_deadman(self, msg: Any) -> None:
-                self._deadman_pressed = bool(msg.data)
+                try:
+                    command = self._safety_loop.update_deadman(
+                        bool(msg.data),
+                        real_robot_latch=self._real_robot_latch(),
+                    )
+                    if command is not None:
+                        self._publish_command(command)
+                except Exception as exc:  # defensive ROS callback boundary: fail closed.
+                    self._publish_exception_stop(exc)
 
             def _real_robot_latch(self) -> bool:
                 return bool(self.get_parameter("real_robot_latch").value)
 
             def _on_pose(self, pose_msg: Any) -> None:
                 try:
-                    command = self._mapper.handle_pose(
+                    command = self._safety_loop.handle_pose(
                         pose_msg,
-                        deadman_pressed=self._deadman_pressed,
                         real_robot_latch=self._real_robot_latch(),
-                        deadman_is_physical=config.deadman_source == "physical_topic",
                     )
-                    payload = build_twist_stamped_payload(
-                        mapper_command_to_twist_command(command)
-                    )
-                    self._publish_twist_payload(payload)
-                    self._publish_status(payload)
+                    self._publish_command(command)
                 except Exception as exc:  # defensive: fail closed with zero twist.
-                    payload = build_twist_stamped_payload(
-                        TwistCommand(
-                            linear_xyz=(0.0, 0.0, 0.0),
-                            angular_xyz=(0.0, 0.0, 0.0),
-                            planning_frame=config.planning_frame,
-                            command_enabled=False,
-                            stop_reason=f"wrapper_exception:{type(exc).__name__}",
+                    self._publish_exception_stop(exc)
+
+            def _on_watchdog(self) -> None:
+                try:
+                    self._publish_command(
+                        self._safety_loop.poll_safety(
+                            real_robot_latch=self._real_robot_latch(),
                         )
                     )
-                    self._publish_twist_payload(payload)
-                    self._publish_status(payload)
-                    self.get_logger().error(f"Mapper wrapper stopped command output: {exc}")
+                except Exception as exc:  # defensive ROS callback boundary: fail closed.
+                    self._publish_exception_stop(exc)
+
+            def _publish_command(self, command: TwistCommand) -> None:
+                payload = build_twist_stamped_payload(command)
+                self._publish_twist_payload(payload)
+                self._publish_status(payload)
+
+            def _publish_exception_stop(self, exc: Exception) -> None:
+                payload = build_twist_stamped_payload(
+                    TwistCommand(
+                        linear_xyz=(0.0, 0.0, 0.0),
+                        angular_xyz=(0.0, 0.0, 0.0),
+                        planning_frame=config.planning_frame,
+                        command_enabled=False,
+                        stop_reason=f"wrapper_exception:{type(exc).__name__}",
+                    )
+                )
+                self._publish_twist_payload(payload)
+                self._publish_status(payload)
+                self.get_logger().error(f"Mapper wrapper stopped command output: {exc}")
 
             def _publish_twist_payload(self, payload: Mapping[str, Any]) -> None:
                 msg = self._twist_type()
@@ -461,6 +575,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--planning-frame", default=DEFAULT_PLANNING_FRAME)
     parser.add_argument("--mapper-factory", default=DEFAULT_MAPPER_FACTORY)
     parser.add_argument("--calibration-path", default=None)
+    parser.add_argument("--watchdog-period-s", type=float, default=DEFAULT_WATCHDOG_PERIOD_S)
     parser.add_argument(
         "--backend",
         choices=[MOVEIT_SERVO_TWIST_BACKEND],
@@ -502,6 +617,7 @@ def config_from_args(args: argparse.Namespace) -> Gen3ViveRos2WrapperConfig:
         planning_frame=args.planning_frame,
         mapper_factory=args.mapper_factory,
         calibration_path=args.calibration_path,
+        watchdog_period_s=float(args.watchdog_period_s),
         backend=cast(BackendName, args.backend),
         deadman_source=cast(DeadmanSource, args.deadman_source),
         dry_run=bool(args.dry_run),

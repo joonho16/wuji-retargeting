@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 import unittest
 from inspect import signature
 from types import SimpleNamespace
@@ -343,23 +342,65 @@ class Gen3ViveMapperWrapperIntegrationTest(unittest.TestCase):
         self.assertTrue(command.enabled)
         self.assertEqual(command.stop_reason, StopReason.NEUTRAL_CAPTURED.value)
 
-    def test_pose_stamped_like_adapter_rejects_bad_orientation(self) -> None:
+    def test_pose_stamped_like_adapter_invalid_pose_forces_recapture(self) -> None:
         mapper = Gen3ViveMapper.from_calibration(calibration())
+        valid = {
+            "header": {"frame_id": "steamvr_world"},
+            "pose": {
+                "position": {"x": 0.0, "y": 0.0, "z": 0.0},
+                "orientation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0},
+            },
+        }
+        active = {
+            "header": {"frame_id": "steamvr_world"},
+            "pose": {
+                "position": {"x": 0.02, "y": 0.0, "z": 0.0},
+                "orientation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0},
+            },
+        }
         msg = SimpleNamespace(
             header=SimpleNamespace(frame_id="steamvr_world"),
             pose=SimpleNamespace(
                 position=SimpleNamespace(x=0.0, y=0.0, z=0.0),
-                orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=math.nan),
+                orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=2.0),
             ),
         )
 
-        with self.assertRaisesRegex(MapperError, "finite"):
-            mapper.handle_pose(
-                msg,
-                deadman_pressed=True,
-                real_robot_latch=False,
-                now_monotonic_s=61.0,
-            )
+        mapper.handle_pose(
+            valid,
+            deadman_pressed=True,
+            real_robot_latch=False,
+            now_monotonic_s=61.0,
+        )
+        enabled = mapper.handle_pose(
+            active,
+            deadman_pressed=True,
+            real_robot_latch=False,
+            now_monotonic_s=61.01,
+        )
+        self.assertTrue(enabled.enabled)
+
+        stopped = mapper.handle_pose(
+            msg,
+            deadman_pressed=True,
+            real_robot_latch=False,
+            now_monotonic_s=61.02,
+        )
+        self.assertFalse(stopped.enabled)
+        self.assertEqual(stopped.stop_reason, StopReason.INVALID_POSE.value)
+        self.assertTrue(mapper.core.requires_neutral_recapture)
+
+        still_held = mapper.handle_pose(
+            active,
+            deadman_pressed=True,
+            real_robot_latch=False,
+            now_monotonic_s=61.03,
+        )
+        self.assertFalse(still_held.enabled)
+        self.assertEqual(
+            still_held.stop_reason,
+            StopReason.WAITING_FOR_NEUTRAL_RECAPTURE.value,
+        )
 
 
 if __name__ == "__main__":
