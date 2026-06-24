@@ -215,6 +215,17 @@ docker compose -f docker-compose.gen3-vive.yml --profile tools run --rm shell \
   bash -lc 'ros2 topic echo /gen3_vive/debug_twist'
 ```
 
+Interactive keyboard deadman helper for physical-topic tests:
+
+```bash
+# Publishes std_msgs/Bool on /gen3_vive/physical_deadman from inside Docker.
+# Enter toggles false/true, q + Enter exits, Ctrl-C publishes false before exit.
+./scripts/gen3_vive_enter_deadman.sh
+```
+
+This helper is for bring-up only. It is not a substitute for a real physical
+deadman or E-stop during real robot operation.
+
 `example/config/gen3_vive_dry_run_calibration.yaml` is identity calibration for
 container smoke tests only. It is not a reviewed real-robot calibration.
 
