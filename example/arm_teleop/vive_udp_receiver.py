@@ -31,6 +31,7 @@ EXPECTED_ROLE = "gen3_tracker"
 EXPECTED_FRAME = "steamvr_world"
 DEFAULT_POSE_TOPIC = f"/vive/{EXPECTED_ROLE}/pose"
 DEFAULT_STATUS_TOPIC = f"/vive/{EXPECTED_ROLE}/status"
+QUATERNION_NORM_TOLERANCE = 1.0e-3
 
 
 class VivePacketError(ValueError):
@@ -67,6 +68,7 @@ class ViveReceiverDiagnostics:
     invalid_json_packets: int = 0
     missing_field_packets: int = 0
     non_finite_packets: int = 0
+    non_unit_quaternion_packets: int = 0
     role_mismatch_packets: int = 0
     frame_mismatch_packets: int = 0
     serial_mismatch_packets: int = 0
@@ -103,6 +105,8 @@ class ViveReceiverDiagnostics:
             self.missing_field_packets += 1
         elif reason == "non_finite":
             self.non_finite_packets += 1
+        elif reason == "non_unit_quaternion":
+            self.non_unit_quaternion_packets += 1
         elif reason == "role_mismatch":
             self.role_mismatch_packets += 1
         elif reason == "frame_mismatch":
@@ -120,6 +124,7 @@ class ViveReceiverDiagnostics:
             "invalid_json_packets": self.invalid_json_packets,
             "missing_field_packets": self.missing_field_packets,
             "non_finite_packets": self.non_finite_packets,
+            "non_unit_quaternion_packets": self.non_unit_quaternion_packets,
             "role_mismatch_packets": self.role_mismatch_packets,
             "frame_mismatch_packets": self.frame_mismatch_packets,
             "serial_mismatch_packets": self.serial_mismatch_packets,
@@ -136,10 +141,8 @@ class ViveReceiverDiagnostics:
 class VivePacketParser:
     """Validate VIVE UDP JSON packets against the Linux receiver contract."""
 
-    expected_role: str = EXPECTED_ROLE
-    expected_frame: str = EXPECTED_FRAME
     expected_serial: str | None = None
-    pose_topic: str = DEFAULT_POSE_TOPIC
+    quaternion_norm_tolerance: float = QUATERNION_NORM_TOLERANCE
     diagnostics: ViveReceiverDiagnostics = field(default_factory=ViveReceiverDiagnostics)
 
     def parse_datagram(
@@ -186,17 +189,17 @@ class VivePacketParser:
             raise VivePacketError("invalid_json", "packet JSON root must be an object")
 
         role = _required_string(raw, "role")
-        if role != self.expected_role:
+        if role != EXPECTED_ROLE:
             raise VivePacketError(
                 "role_mismatch",
-                f"expected role={self.expected_role!r}, got {role!r}",
+                f"expected role={EXPECTED_ROLE!r}, got {role!r}",
             )
 
         frame = _required_string(raw, "frame")
-        if frame != self.expected_frame:
+        if frame != EXPECTED_FRAME:
             raise VivePacketError(
                 "frame_mismatch",
-                f"expected frame={self.expected_frame!r}, got {frame!r}",
+                f"expected frame={EXPECTED_FRAME!r}, got {frame!r}",
             )
 
         serial = _optional_string(raw, "serial")
@@ -214,6 +217,10 @@ class VivePacketParser:
             tuple[float, float, float, float],
             _finite_float_tuple(raw, "quat", 4),
         )
+        _validate_unit_quaternion(
+            quaternion_xyzw,
+            tolerance=self.quaternion_norm_tolerance,
+        )
         sender_timestamp_s = _optional_finite_float(raw, "t")
 
         selected_key = deterministic_selected_key(role=role, serial=serial)
@@ -226,7 +233,7 @@ class VivePacketParser:
             sender_timestamp_s=sender_timestamp_s,
             received_monotonic_s=received_monotonic_s,
             selected_key=selected_key,
-            pose_topic=self.pose_topic,
+            pose_topic=DEFAULT_POSE_TOPIC,
             source_address=source_address,
         )
 
@@ -234,7 +241,10 @@ class VivePacketParser:
 def deterministic_selected_key(role: str, serial: str | None) -> str:
     """Return the stable role/serial key used in diagnostics and filtering."""
 
-    return f"role={role};serial={serial or '<missing>'}"
+    parts = [f"role={role}"]
+    if serial is not None:
+        parts.append(f"serial={serial}")
+    return ";".join(parts)
 
 
 def _required_string(raw: Mapping[str, Any], field_name: str) -> str:
@@ -278,6 +288,21 @@ def _finite_float_tuple(
     return floats
 
 
+def _validate_unit_quaternion(
+    quaternion_xyzw: tuple[float, float, float, float],
+    *,
+    tolerance: float,
+) -> None:
+    if not math.isfinite(tolerance) or tolerance < 0.0:
+        raise VivePacketError("non_unit_quaternion", "quaternion tolerance must be finite")
+    norm = math.sqrt(sum(component * component for component in quaternion_xyzw))
+    if abs(norm - 1.0) > tolerance:
+        raise VivePacketError(
+            "non_unit_quaternion",
+            f"field 'quat' must be unit length; norm={norm:.6f}",
+        )
+
+
 def _optional_finite_float(raw: Mapping[str, Any], field_name: str) -> float | None:
     if field_name not in raw or raw[field_name] is None:
         return None
@@ -315,10 +340,7 @@ class Ros2ViveUdpReceiver:
         *,
         bind_host: str,
         bind_port: int,
-        expected_role: str,
-        expected_frame: str,
         expected_serial: str | None,
-        pose_topic: str,
         status_topic: str,
         poll_period_s: float,
     ):
@@ -333,20 +355,17 @@ class Ros2ViveUdpReceiver:
                 self._pose_type = PoseStamped
                 self._status_type = String
                 self._parser = VivePacketParser(
-                    expected_role=expected_role,
-                    expected_frame=expected_frame,
                     expected_serial=expected_serial,
-                    pose_topic=pose_topic,
                 )
                 self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 self._sock.bind((bind_host, bind_port))
                 self._sock.setblocking(False)
-                self._pose_pub = self.create_publisher(PoseStamped, pose_topic, 10)
+                self._pose_pub = self.create_publisher(PoseStamped, DEFAULT_POSE_TOPIC, 10)
                 self._status_pub = self.create_publisher(String, status_topic, 10)
                 self._timer = self.create_timer(poll_period_s, self._poll)
                 self.get_logger().info(
                     "Listening for VIVE UDP JSON on "
-                    f"{bind_host}:{bind_port}; publishing validated poses to {pose_topic}"
+                    f"{bind_host}:{bind_port}; publishing validated poses to {DEFAULT_POSE_TOPIC}"
                 )
 
             def _poll(self) -> None:
@@ -406,10 +425,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--bind-host", default="0.0.0.0", help="UDP bind host")
     parser.add_argument("--bind-port", type=int, default=39539, help="UDP bind port")
-    parser.add_argument("--expected-role", default=EXPECTED_ROLE)
-    parser.add_argument("--expected-frame", default=EXPECTED_FRAME)
     parser.add_argument("--expected-serial", default=None)
-    parser.add_argument("--pose-topic", default=DEFAULT_POSE_TOPIC)
     parser.add_argument("--status-topic", default=DEFAULT_STATUS_TOPIC)
     parser.add_argument("--poll-period-s", type=float, default=0.002)
     parser.add_argument(
@@ -423,10 +439,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     args = _build_arg_parser().parse_args(argv)
     if args.check_packet is not None:
         parser = VivePacketParser(
-            expected_role=args.expected_role,
-            expected_frame=args.expected_frame,
             expected_serial=args.expected_serial,
-            pose_topic=args.pose_topic,
         )
         try:
             packet = parser.parse_datagram(args.check_packet)
@@ -441,10 +454,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     receiver = Ros2ViveUdpReceiver(
         bind_host=args.bind_host,
         bind_port=args.bind_port,
-        expected_role=args.expected_role,
-        expected_frame=args.expected_frame,
         expected_serial=args.expected_serial,
-        pose_topic=args.pose_topic,
         status_topic=args.status_topic,
         poll_period_s=args.poll_period_s,
     )

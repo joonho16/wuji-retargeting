@@ -24,6 +24,7 @@ Linux receiver behavior for Task 2:
 - Accept only `role=gen3_tracker` for the Gen3 arm tracker stream.
 - Accept only `frame=steamvr_world`; do not reinterpret other frames as the
   SteamVR world frame.
+- Accept only finite `pos[3]` and finite unit-length `quat[4]` pose fields.
 - Publish the raw pose stream on `/vive/gen3_tracker/pose` after validation.
 - Refuse role/frame mismatches locally with diagnostics; do not modify, patch, or
   auto-correct sender-side code/configuration.
@@ -63,6 +64,13 @@ For Gen3 VIVE tracker packets, use this ordered diagnostic key shape:
 
 ```text
 role=gen3_tracker;serial=<sender-serial>
+```
+
+When serial is absent and Linux config has not pinned a serial, the key omits
+the serial segment:
+
+```text
+role=gen3_tracker
 ```
 
 Rules:

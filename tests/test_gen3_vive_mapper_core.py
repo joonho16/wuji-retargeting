@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import unittest
+from inspect import signature
 from types import SimpleNamespace
 
 from example.arm_teleop.gen3_vive_mapper import (
@@ -18,6 +19,7 @@ from example.arm_teleop.gen3_vive_mapper import (
     StopReason,
     ToolPose,
     ViveTrackerPose,
+    build_mapper_from_yaml,
 )
 from example.arm_teleop.gen3_vive_ros2_wrapper import (
     DEFAULT_MAPPER_FACTORY,
@@ -251,6 +253,30 @@ class Gen3ViveMapperStateMachineTest(unittest.TestCase):
         self.assertFalse(command.enabled)
         self.assertEqual(command.stop_reason, StopReason.SYNTHETIC_DEADMAN_REJECTED.value)
 
+    def test_real_robot_requires_dynamic_latch_even_with_physical_deadman(self) -> None:
+        mapper = Gen3ViveMapper.from_calibration(
+            calibration(),
+            MapperRuntimeConfig(dry_run=False, real_robot=True),
+        )
+        msg = {
+            "header": {"frame_id": "steamvr_world"},
+            "pose": {
+                "position": {"x": 0.0, "y": 0.0, "z": 0.0},
+                "orientation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0},
+            },
+        }
+
+        command = mapper.handle_pose(
+            msg,
+            deadman_pressed=True,
+            deadman_is_physical=True,
+            real_robot_latch=False,
+            now_monotonic_s=40.0,
+        )
+
+        self.assertFalse(command.enabled)
+        self.assertEqual(command.stop_reason, StopReason.REAL_ROBOT_LATCH.value)
+
     def test_diagnostic_kortex_backend_requires_explicit_opt_in(self) -> None:
         with self.assertRaisesRegex(MapperError, "diagnostic-only"):
             MapperRuntimeConfig(command_backend=DIAGNOSTIC_KORTEX_BACKEND)
@@ -266,6 +292,7 @@ class Gen3ViveMapperWrapperIntegrationTest(unittest.TestCase):
     def test_default_mapper_factory_points_to_yaml_factory(self) -> None:
         factory = load_mapper_factory(DEFAULT_MAPPER_FACTORY)
         self.assertTrue(callable(factory))
+        self.assertIn("runtime", signature(build_mapper_from_yaml).parameters)
 
     def test_real_robot_wrapper_requires_calibration_path(self) -> None:
         with self.assertRaisesRegex(Gen3ViveRos2WrapperConfigError, "calibration_path"):

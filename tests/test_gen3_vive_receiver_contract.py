@@ -2,7 +2,18 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
+import json
 import unittest
+
+from example.arm_teleop.vive_udp_receiver import (
+    DEFAULT_POSE_TOPIC,
+    VivePacketError,
+    VivePacketParser,
+    deterministic_selected_key,
+    main as receiver_main,
+)
 
 from tests.helpers.gen3_vive_receiver_contract import (
     EXPECTED_FRAME,
@@ -50,6 +61,34 @@ class Gen3ViveReceiverRoleFrameContractTest(unittest.TestCase):
             with self.subTest(field=field):
                 with self.assertRaisesRegex(ReceiverContractError, field):
                     validate_role_frame_contract(packet)
+
+    def test_production_cli_does_not_expose_role_frame_or_pose_topic_overrides(self) -> None:
+        packet = self.valid_packet()
+        for forbidden_option in ("--expected-role", "--expected-frame", "--pose-topic"):
+            with self.subTest(forbidden_option=forbidden_option):
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    with self.assertRaises(SystemExit) as raised:
+                        receiver_main(
+                            [
+                                forbidden_option,
+                                "left_hand" if forbidden_option != "--pose-topic" else "/vive/left/pose",
+                                "--check-packet",
+                                json.dumps(packet),
+                            ]
+                        )
+                self.assertNotEqual(raised.exception.code, 0)
+
+    def test_production_parser_rejects_non_unit_quaternion(self) -> None:
+        packet = self.valid_packet() | {"quat": [0.0, 0.0, 0.0, 2.0]}
+        parser = VivePacketParser()
+
+        with self.assertRaises(VivePacketError) as raised:
+            parser.parse_datagram(json.dumps(packet))
+
+        self.assertEqual(raised.exception.reason, "non_unit_quaternion")
+        self.assertEqual(parser.diagnostics.non_unit_quaternion_packets, 1)
 
 
 class Gen3ViveReceiverRoleSerialSelectionTest(unittest.TestCase):
@@ -107,8 +146,22 @@ class Gen3ViveReceiverRoleSerialSelectionTest(unittest.TestCase):
         packet.pop("serial")
 
         self.assertEqual(role_serial_selection_key(packet), "role=gen3_tracker")
+        self.assertEqual(
+            deterministic_selected_key(role="gen3_tracker", serial=None),
+            "role=gen3_tracker",
+        )
         with self.assertRaisesRegex(ReceiverContractError, "serial"):
             validate_role_frame_contract(packet, expected_serial="LHR-UNIT-001")
+
+    def test_production_parser_missing_serial_matches_helper_contract(self) -> None:
+        packet = self.valid_packet()
+        packet.pop("serial")
+
+        parsed = VivePacketParser().parse_datagram(json.dumps(packet))
+
+        self.assertIsNone(parsed.serial)
+        self.assertEqual(parsed.selected_key, "role=gen3_tracker")
+        self.assertEqual(parsed.pose_topic, DEFAULT_POSE_TOPIC)
 
 
 if __name__ == "__main__":

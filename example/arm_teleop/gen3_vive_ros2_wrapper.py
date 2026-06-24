@@ -6,9 +6,10 @@ owning the mapper algorithm itself.  It intentionally keeps configuration,
 backend selection, real-robot gating, and TwistStamped payload construction
 unit-testable without ROS2 so safety defaults can be verified in CI.
 
-The default command path is MoveIt Servo ``TwistStamped``.  Direct Kortex twist
-is a quarantined diagnostic backend: it is disabled by default and requires an
-explicit diagnostic flag even before any ROS2 node is started.
+The default and only ROS2 wrapper command path is MoveIt Servo
+``TwistStamped``.  Direct Kortex twist remains quarantined in the dependency-light
+mapper core for diagnostic tests, but this ROS2 wrapper does not expose that
+backend as a runnable node branch.
 """
 
 from __future__ import annotations
@@ -17,9 +18,11 @@ import argparse
 import importlib
 import json
 import math
+import sys
 import time
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any, Literal, Protocol, cast
 
 DEFAULT_POSE_TOPIC = "/vive/gen3_tracker/pose"
@@ -59,7 +62,6 @@ class TwistCommand:
 class Gen3ViveRos2WrapperConfig:
     """Safety-relevant ROS2 wrapper and CLI configuration."""
 
-    pose_topic: str = DEFAULT_POSE_TOPIC
     twist_topic: str = DEFAULT_TWIST_TOPIC
     status_topic: str = DEFAULT_STATUS_TOPIC
     physical_deadman_topic: str = DEFAULT_PHYSICAL_DEADMAN_TOPIC
@@ -71,13 +73,11 @@ class Gen3ViveRos2WrapperConfig:
     dry_run: bool = True
     real_robot: bool = False
     real_robot_latch: bool = False
-    diagnostic_kortex_enabled: bool = False
     synthetic_deadman_pressed: bool = False
 
     def validate(self) -> None:
         """Validate safety defaults before publishing or spinning a ROS2 node."""
 
-        _require_non_empty(self.pose_topic, "pose_topic")
         _require_non_empty(self.status_topic, "status_topic")
         _require_non_empty(self.planning_frame, "planning_frame")
         _require_non_empty(self.mapper_factory, "mapper_factory")
@@ -85,11 +85,10 @@ class Gen3ViveRos2WrapperConfig:
         if self.backend == MOVEIT_SERVO_TWIST_BACKEND:
             _require_non_empty(self.twist_topic, "twist_topic")
         elif self.backend == DIAGNOSTIC_KORTEX_TWIST_BACKEND:
-            if not self.diagnostic_kortex_enabled:
-                raise Gen3ViveRos2WrapperConfigError(
-                    "diagnostic Kortex backend is disabled by default; pass the "
-                    "explicit diagnostic enable flag to use it"
-                )
+            raise Gen3ViveRos2WrapperConfigError(
+                "diagnostic Kortex backend is not implemented by this ROS2 "
+                "wrapper; use the mapper-core diagnostic path instead"
+            )
         else:  # pragma: no cover - typing prevents this unless callers cast.
             raise Gen3ViveRos2WrapperConfigError(f"unsupported backend {self.backend!r}")
 
@@ -268,6 +267,7 @@ def load_mapper_factory(import_path: str = DEFAULT_MAPPER_FACTORY) -> Any:
             "mapper_factory must use 'module:attribute' syntax"
         )
     module_name, attr_name = import_path.split(":", 1)
+    _ensure_repo_root_importable_for_direct_script(module_name)
     try:
         module = importlib.import_module(module_name)
     except ImportError as exc:
@@ -280,6 +280,46 @@ def load_mapper_factory(import_path: str = DEFAULT_MAPPER_FACTORY) -> Any:
         raise Gen3ViveRos2WrapperConfigError(
             f"mapper factory {attr_name!r} not found in {module_name!r}"
         ) from exc
+
+
+def _ensure_repo_root_importable_for_direct_script(module_name: str) -> None:
+    """Make documented filename launches work for repo-local package imports."""
+
+    if not module_name.startswith("example."):
+        return
+    repo_root = Path(__file__).resolve().parents[2]
+    repo_root_text = str(repo_root)
+    if repo_root_text not in sys.path:
+        sys.path.insert(0, repo_root_text)
+
+
+def build_mapper_runtime_config(config: Gen3ViveRos2WrapperConfig) -> Any:
+    """Translate wrapper safety gates into the mapper-core runtime config."""
+
+    _ensure_repo_root_importable_for_direct_script("example.arm_teleop.gen3_vive_mapper")
+    from example.arm_teleop.gen3_vive_mapper import MapperRuntimeConfig
+
+    return MapperRuntimeConfig(
+        dry_run=config.dry_run,
+        real_robot=config.real_robot,
+        command_backend=config.backend,
+        allow_diagnostic_kortex=False,
+    )
+
+
+def construct_mapper_with_factory(
+    config: Gen3ViveRos2WrapperConfig,
+    mapper_factory: Any,
+) -> MapperProtocol:
+    """Construct the mapper while preserving wrapper runtime safety gates."""
+
+    if not config.calibration_path:
+        raise Gen3ViveRos2WrapperConfigError(
+            "--spin requires --calibration-path for mapper construction"
+        )
+    runtime = build_mapper_runtime_config(config)
+    mapper = mapper_factory(config.calibration_path, runtime)
+    return cast(MapperProtocol, mapper)
 
 
 class Ros2Gen3ViveMapperWrapper:
@@ -314,7 +354,7 @@ class Ros2Gen3ViveMapperWrapper:
                 self.declare_parameter("real_robot_latch", bool(config.real_robot_latch))
                 self._twist_pub = self.create_publisher(TwistStamped, config.twist_topic, 10)
                 self._status_pub = self.create_publisher(String, config.status_topic, 10)
-                self.create_subscription(PoseStamped, config.pose_topic, self._on_pose, 10)
+                self.create_subscription(PoseStamped, DEFAULT_POSE_TOPIC, self._on_pose, 10)
                 if config.deadman_source == "physical_topic":
                     self.create_subscription(
                         Bool,
@@ -415,7 +455,6 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Safe ROS2 wrapper/CLI boundary for Gen3 VIVE mapper commands.",
     )
-    parser.add_argument("--pose-topic", default=DEFAULT_POSE_TOPIC)
     parser.add_argument("--twist-topic", default=DEFAULT_TWIST_TOPIC)
     parser.add_argument("--status-topic", default=DEFAULT_STATUS_TOPIC)
     parser.add_argument("--physical-deadman-topic", default=DEFAULT_PHYSICAL_DEADMAN_TOPIC)
@@ -424,7 +463,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--calibration-path", default=None)
     parser.add_argument(
         "--backend",
-        choices=[MOVEIT_SERVO_TWIST_BACKEND, DIAGNOSTIC_KORTEX_TWIST_BACKEND],
+        choices=[MOVEIT_SERVO_TWIST_BACKEND],
         default=MOVEIT_SERVO_TWIST_BACKEND,
     )
     parser.add_argument(
@@ -436,7 +475,6 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.set_defaults(dry_run=True)
     parser.add_argument("--real-robot", action="store_true", default=False)
     parser.add_argument("--real-robot-latch", action="store_true", default=False)
-    parser.add_argument("--enable-diagnostic-kortex", action="store_true", default=False)
     parser.add_argument("--synthetic-deadman-pressed", action="store_true", default=False)
     parser.add_argument(
         "--print-config",
@@ -458,7 +496,6 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 
 def config_from_args(args: argparse.Namespace) -> Gen3ViveRos2WrapperConfig:
     return Gen3ViveRos2WrapperConfig(
-        pose_topic=args.pose_topic,
         twist_topic=args.twist_topic,
         status_topic=args.status_topic,
         physical_deadman_topic=args.physical_deadman_topic,
@@ -470,7 +507,6 @@ def config_from_args(args: argparse.Namespace) -> Gen3ViveRos2WrapperConfig:
         dry_run=bool(args.dry_run),
         real_robot=bool(args.real_robot),
         real_robot_latch=bool(args.real_robot_latch),
-        diagnostic_kortex_enabled=bool(args.enable_diagnostic_kortex),
         synthetic_deadman_pressed=bool(args.synthetic_deadman_pressed),
     )
 
@@ -492,12 +528,8 @@ def main(argv: Iterable[str] | None = None) -> int:
             print(json.dumps(config.as_json_dict(), sort_keys=True))
             return 0
 
-        if not config.calibration_path:
-            raise Gen3ViveRos2WrapperConfigError(
-                "--spin requires --calibration-path for mapper construction"
-            )
         mapper_factory = load_mapper_factory(config.mapper_factory)
-        mapper = mapper_factory(config.calibration_path)
+        mapper = construct_mapper_with_factory(config, mapper_factory)
         Ros2Gen3ViveMapperWrapper(config, mapper).spin()
         return 0
     except Gen3ViveRos2WrapperConfigError as exc:

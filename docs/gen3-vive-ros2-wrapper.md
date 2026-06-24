@@ -17,7 +17,7 @@ The default configuration is intentionally non-actuating:
 - `real_robot: false`
 - `real_robot_latch: false`
 - `backend: moveit_servo_twist`
-- pose input topic: `/vive/gen3_tracker/pose`
+- fixed pose input topic: `/vive/gen3_tracker/pose`
 - MoveIt Servo command topic: `/servo_node/delta_twist_cmds`
 
 With defaults, the CLI validates and prints config without importing ROS2 or
@@ -47,11 +47,11 @@ The default backend is MoveIt Servo `TwistStamped`. The wrapper exposes a
 unit-testable `build_twist_stamped_payload()` helper and the optional ROS2 node
 publishes to `/servo_node/delta_twist_cmds` by default.
 
-Direct Kortex twist is diagnostic-only. It is disabled by default and requires an
-explicit `--backend diagnostic_kortex_twist --enable-diagnostic-kortex` selection
-before configuration validation succeeds. The ROS2 wrapper node in this module
-still only publishes MoveIt Servo `TwistStamped`; direct Kortex remains outside
-the normal operator launch path.
+Direct Kortex twist remains diagnostic-only in the dependency-light mapper core.
+The ROS2 wrapper does **not** expose a direct Kortex node branch; selecting
+`diagnostic_kortex_twist` through the wrapper is a fail-closed configuration
+error. The only runnable wrapper command backend is MoveIt Servo
+`TwistStamped`.
 
 ## Mapper integration contract
 
@@ -59,7 +59,13 @@ Worker-1 owns the dependency-light mapper core. The wrapper accepts an injected
 mapper object implementing:
 
 ```python
-def handle_pose(pose_msg, *, deadman_pressed: bool, real_robot_latch: bool): ...
+def handle_pose(
+    pose_msg,
+    *,
+    deadman_pressed: bool,
+    real_robot_latch: bool,
+    deadman_is_physical: bool = False,
+): ...
 ```
 
 The mapper may return either a `TwistCommand` or a mapping with

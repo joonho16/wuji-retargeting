@@ -132,7 +132,7 @@ stop reason.
 Only after Stage 0-3 pass and the physical E-stop/deadman are tested:
 
 ```bash
-python3 example/arm_teleop/gen3_vive_ros2_wrapper.py \
+python3 -m example.arm_teleop.gen3_vive_ros2_wrapper \
   --spin \
   --no-dry-run \
   --real-robot \

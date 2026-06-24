@@ -634,10 +634,13 @@ class Gen3ViveMapper:
         )
 
 
-def build_mapper_from_yaml(path: str | Path) -> Gen3ViveMapper:
+def build_mapper_from_yaml(
+    path: str | Path,
+    runtime: MapperRuntimeConfig | None = None,
+) -> Gen3ViveMapper:
     """Factory used by the ROS2 wrapper default ``--mapper-factory`` setting."""
 
-    return Gen3ViveMapper.from_yaml_file(path)
+    return Gen3ViveMapper.from_yaml_file(path, runtime)
 
 
 def pose_stamped_like_to_tracker_pose(
