@@ -201,7 +201,8 @@ python teleop_sim.py --input my_device --hand right \
     --config config/adaptive_analytical_my_device.yaml
 
 # Real hardware
-python teleop_real.py --input my_device --hand right \
+CONFIRM_REAL_WH110=I_UNDERSTAND_WH110_MOVES \
+  python teleop_real.py --input my_device --hand right \
     --config config/adaptive_analytical_my_device.yaml
 ```
 

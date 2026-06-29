@@ -1,0 +1,21 @@
+.git
+.omx
+.local
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+build/
+dist/
+*.egg-info/
+.env
+.env.*
+.DS_Store
+
+# Proprietary MANUS SDK mounted at runtime
+manus-sdk/

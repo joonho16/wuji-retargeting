@@ -1,0 +1,26 @@
+# Dry-run identity calibration for Docker/receiver/wrapper smoke tests only.
+# Do not use this file for real Gen3 motion.
+source_frame: steamvr_world
+planning_frame: base_link
+tracker_role: gen3_tracker
+tracker_mount_frame: gen3_tool_tracker
+T_planning_source:
+  translation: [0.0, 0.0, 0.0]
+  rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
+T_tool_tracker_mount:
+  translation: [0.0, 0.0, 0.0]
+  rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
+linear_scale: 1.0
+angular_scale: 1.0
+# Per-axis tracker-driven tool offset limits, relative to the neutral tool pose
+# captured when deadman changes false -> true.
+workspace_limits:
+  x: [-0.25, 0.25]
+  y: [-0.25, 0.25]
+  z: [-0.20, 0.20]
+max_linear_mps: 0.10
+max_angular_radps: 0.25
+# Optional jitter deadbands before speed limiting/filtering; 0 disables.
+linear_deadband_m: 0.0
+angular_deadband_rad: 0.0
+stale_timeout_s: 0.10

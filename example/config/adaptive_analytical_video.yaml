@@ -26,11 +26,11 @@ retarget:
   # FullHandVec parameters - use same as AVP config (compensates robot model)
   w_full_hand: 1.0             # Full hand vec weight
   segment_scaling:
-    thumb:  [0.97, 1.0, 1.0]
-    index:  [1.0, 1.03, 1.10]
-    middle: [1.0, 1.0, 1.0]
-    ring:   [1.0, 1.0, 1.0]
-    pinky:  [1.05, 1.15, 1.15]
+    thumb:  [1.00, 0.95, 1.00, 1.00]
+    index:  [1.00, 1.10, 1.10, 1.10]
+    middle: [1.00, 1.00, 1.00, 1.00]
+    ring:   [1.00, 1.00, 1.00, 1.00]
+    pinky:  [1.00, 1.05, 1.15, 1.15]
 
   # Pinch distance thresholds (cm) for each finger
   # Wider than AVP to account for MediaPipe landmark noise
@@ -47,7 +47,7 @@ retarget:
   # Compensates for systematic orientation offset in monocular video
   # vs. stereo AVP data after wrist frame estimation.
   mediapipe_rotation:
-    x: -5.0
+    x: 5.0
     y: -5.0
     z: -15.0
 

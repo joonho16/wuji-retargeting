@@ -15,7 +15,7 @@ retarget:
   huber_delta_dir: 0.5         # Direction Huber threshold
 
   # Regularization
-  norm_delta: 0.04             # Velocity regularization weight
+  norm_delta: 0.08             # Velocity regularization weight
 
   # TipDirVec parameters
   w_pos: 1.0                   # Tip position weight (wrist → tip vectors)
@@ -26,10 +26,10 @@ retarget:
   # FullHandVec parameters
   w_full_hand: 1.0             # Full hand vec weight
   segment_scaling:
-    thumb:  [0.98, 1, 1]
-    index:  [1.1, 0.989, 1.03]
-    middle: [1.10, 0.96, 0.96]
-    ring:   [1.1, 0.97, 0.99]
+    thumb:  [1.0, 1, 1.1]
+    index:  [1.05, 1.0, 1.00]
+    middle: [1.0, 0.96, 0.96]
+    ring:   [1.0, 0.97, 0.99]
     pinky:  [1.105, 1.15, 1.15]
 
 #  segment_scaling:
@@ -50,12 +50,12 @@ retarget:
   # MediaPipe rotation adjustment (degrees)
   # LEFT HAND: z = 15.0
   mediapipe_rotation:
-    x: 0.0
-    y: 0.0
-    z: 15.0
+    x: 5.0
+    y: -5.0
+    z: -5.0
 
   # Low-pass filter
-  lp_alpha: 0.2
+  lp_alpha: 0.1
 
 render:
   camera:

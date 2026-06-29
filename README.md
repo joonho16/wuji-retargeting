@@ -1,5 +1,11 @@
 # wuji-retargeting
 
+> **Project note.** This checkout is being used as a personal-repo-ready
+> **Gen3 + MANUS teleop** project built on upstream `wuji-retargeting`. The
+> Python package/import name `wuji_retargeting` is intentionally preserved for
+> compatibility; operator-facing launch and restore docs live in
+> [`HOWTO.md`](HOWTO.md) and [`docs/restore-and-publish.md`](docs/restore-and-publish.md).
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) [![Release](https://img.shields.io/github/v/release/wuji-technology/wuji-retargeting)](https://github.com/wuji-technology/wuji-retargeting/releases)
 
 Hand pose retargeting system for Wuji Hand. High-precision retargeting based on adaptive analytical and key-vector optimization, with Wuji Glove as the recommended live input path. Apple Vision Pro, video files, Intel RealSense, ZED cameras, and MANUS-style external pipelines can also be used as input sources.
@@ -16,10 +22,14 @@ https://github.com/user-attachments/assets/72116289-7a33-4a6b-83ca-fb4d9aaece0d
 │   ├── viz/                          // Visualization tools for parameter tuning
 │   └── wuji-description/             // URDF and mesh submodule for Wuji Hand
 ├── example/                          // Demonstration scripts for simulation and hardware control
-│   ├── input_devices/                // Input device modules (Vision Pro, MediaPipe replay, video, RealSense, ZED, Wuji Glove)
-│   ├── config/                       // YAML configuration files
+│   ├── arm_teleop/                   // Gen3 VIVE receiver, mapper, ROS2 wrapper, Servo stack launcher
+│   ├── input_devices/                // Input device modules (Vision Pro, MediaPipe replay, video, RealSense, ZED, Wuji Glove, MANUS UDP)
+│   ├── config/                       // YAML configuration files, including Gen3 VIVE calibration templates
 │   ├── data/                         // Sample recording data
 │   └── utils/                        // Helper utilities
+├── scripts/                          // One-shot smoke/tests plus Gen3/MANUS launch wrappers
+├── docker-compose.gen3-vive.yml      // ROS2/MoveIt Servo Compose stack for Gen3 VIVE teleop
+├── compose.yaml                      // MANUS/WH110 Docker Compose stack
 ├── requirements.txt                  // Python dependencies
 └── README.md
 ```
@@ -40,11 +50,30 @@ pip install -e .
 > dependencies (even with a correct `[build-system]`). Upgrade pip first:
 > `python3 -m pip install -U pip`, then run the install commands above.
 
-### Docker
+### Unified Gen3 + MANUS operator launcher
 
-There is **no official Dockerfile** for wuji-retargeting. If you need to run it in
-a container, build your own image — the [Installation](#installation) steps work
-unchanged inside the container.
+For the current Gen3 + MANUS teleop setup, use the unified launcher instead of
+copying commands from multiple worktrees:
+
+```bash
+scripts/gen3_manus_teleop.sh help
+scripts/gen3_manus_teleop.sh status
+scripts/gen3_manus_teleop.sh full-real --print
+```
+
+The real-hardware path still requires explicit safety latches and reviewed local
+calibration. See [`HOWTO.md`](HOWTO.md) for operator commands and
+[`docs/restore-and-publish.md`](docs/restore-and-publish.md) for fresh-clone
+restore and personal-repo publishing steps.
+
+### Docker / Compose
+
+This repository includes a staged Docker Compose setup for Ubuntu x86_64 desktop
+hosts. The default Compose service is a non-motion smoke test; RealSense and real
+WH110 commands are exposed only through explicit profiles. See
+[`docs/docker-realsense-wh110.md`](docs/docker-realsense-wh110.md) for the full
+build, camera, simulation/tuning, and WH110 sequence. For MANUS Quantum/Metaglove
+bridge input, see [`docs/docker-manus-wh110.md`](docs/docker-manus-wh110.md).
 
 One caveat for the live/hardware paths: the package's own kinematics URDF ships
 with the `wuji-description` submodule and is therefore already inside the image,
@@ -76,7 +105,8 @@ cd example
 
 # Recommended: Wuji Glove live input
 python teleop_sim.py --input wuji_glove --hand right --glove-sn <YOUR_SN>
-python teleop_real.py --input wuji_glove --hand right --glove-sn <YOUR_SN>
+CONFIRM_REAL_WH110=I_UNDERSTAND_WH110_MOVES \
+  python teleop_real.py --input wuji_glove --hand right --glove-sn <YOUR_SN>
 
 # Replay recording (default: adaptive analytical optimizer)
 python teleop_sim.py --play data/avp1.pkl --hand left
@@ -101,9 +131,18 @@ mjpython teleop_sim.py --realsense --hand right
 # ZED camera
 pip install -e ".[zed]"
 mjpython teleop_sim.py --zed --hand right
+
+# MANUS Quantum/Metaglove bridge input (host bridge sends UDP JSON 21x3 keypoints)
+# Terminal 1: keep a real MANUS bridge or mock sender running
+python scripts/manus_udp_mock.py --hand left --host 127.0.0.1 --port 15020
+
+# Terminal 2: inspect/tune before simulation or real hardware
+cd example
+python tuning_tool.py --manus --hand left --manus-host 127.0.0.1 --manus-port 15020
+python teleop_sim.py --input manus --hand left --manus-host 127.0.0.1 --manus-port 15020
 ```
 
-Use `--show-video` to display the camera/video feed with MediaPipe landmarks overlay for input verification.
+Use `--show-video` to display the camera/video feed with MediaPipe landmarks overlay for input verification. For MANUS, use `tuning_tool.py --manus` to inspect the orange/cyan/white skeletons before trying real hardware.
 
 ### Parameter Tuning Visualization Tool
 
@@ -164,8 +203,9 @@ cd example
 # Simulation
 python teleop_sim.py --input wuji_glove --hand right --glove-sn <YOUR_SN>
 
-# Real hardware
-python teleop_real.py --input wuji_glove --hand right --glove-sn <YOUR_SN>
+# Real WH110 hardware (explicit safety latch required)
+CONFIRM_REAL_WH110=I_UNDERSTAND_WH110_MOVES \
+  python teleop_real.py --input wuji_glove --hand right --glove-sn <YOUR_SN>
 
 # Optional: calibrate neutral-pose wrist/thumb offsets
 python calibrate_offset.py --hand right --glove-sn <YOUR_SN> \
@@ -179,7 +219,7 @@ The Wuji Glove path adds per-hand configs (`adaptive_analytical_wuji_glove_left.
 
 #### Hand model: WH110 (default) and WH120
 
-The commands above drive the **WH110** hand — it is the default, no extra flag needed. To drive a **WH120** hand, pass its config (`adaptive_analytical_wuji_glove_wh120_{right,left}.yaml`). That config points the optimizer at the WH120 model via `optimizer.urdf_path` (IK) and `optimizer.mjcf_path` (simulation), and maps the WH120 anatomical link names through `optimizer.link_naming`, so no code change is needed. `teleop_real.py` infers `--hand-model wh120` from the config automatically.
+The direct `teleop_real.py` commands above drive the **WH110** hand by default and require `CONFIRM_REAL_WH110=I_UNDERSTAND_WH110_MOVES` before the Python entrypoint will enable the hand. To drive a **WH120** hand, pass its config (`adaptive_analytical_wuji_glove_wh120_{right,left}.yaml`). That config points the optimizer at the WH120 model via `optimizer.urdf_path` (IK) and `optimizer.mjcf_path` (simulation), and maps the WH120 anatomical link names through `optimizer.link_naming`, so no code change is needed. `teleop_real.py` infers `--hand-model wh120` from the config automatically.
 
 ```bash
 cd example

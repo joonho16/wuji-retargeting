@@ -26,6 +26,9 @@ Usage:
     # Live Wuji Glove input via wuji_sdk
     mjpython teleop_sim.py --input wuji_glove --hand right --glove-sn <YOUR_SN>
 
+    # Live MANUS bridge input (MediaPipe-order 21x3 UDP JSON)
+    mjpython teleop_sim.py --input manus --hand left --manus-port 15020
+
 Input device types:
 - visionpro: Live VisionPro input
 - mediapipe_replay: Replay recorded MediaPipe hand tracking data
@@ -33,6 +36,7 @@ Input device types:
 - realsense: RealSense camera input with MediaPipe hand detection
 - zed: ZED camera input with MediaPipe hand detection
 - wuji_glove: Live Wuji Glove input via wuji_sdk
+- manus: Live MANUS bridge input via UDP JSON MediaPipe-order keypoints
 """
 
 import argparse
@@ -72,6 +76,10 @@ try:
 except ImportError:
     WujiGloveDevice = None
     WUJI_SDK_AVAILABLE = False
+try:
+    from input_devices.manus_quantum import ManusQuantumGlove
+except ImportError:
+    ManusQuantumGlove = None
 
 
 def run_tuning_mode(
@@ -85,6 +93,10 @@ def run_tuning_mode(
     fps: float = 30.0,
     device_name: str = "glove",
     glove_sn: str = "",
+    manus_host: str = "127.0.0.1",
+    manus_port: int = 15020,
+    manus_unit: str = "m",
+    manus_timeout: float = 0.5,
 ):
     """Backward-compatible wrapper for the standalone tuning tool."""
     import tuning_tool
@@ -101,6 +113,11 @@ def run_tuning_mode(
     args.realsense = input_device_type == "realsense"
     args.zed = input_device_type == "zed"
     args.wuji_glove = input_device_type == "wuji_glove"
+    args.manus = input_device_type == "manus"
+    args.manus_host = manus_host
+    args.manus_port = manus_port
+    args.manus_unit = manus_unit
+    args.manus_timeout = manus_timeout
     args.device_name = device_name
     args.glove_sn = glove_sn
     args.show_video = show_video
@@ -111,7 +128,9 @@ def run_tuning_mode(
         "Prefer running tuning_tool.py directly."
     )
 
-    if args.wuji_glove:
+    if args.manus:
+        tuning_tool.run_manus_mode(args)
+    elif args.wuji_glove:
         tuning_tool.run_wuji_glove_mode(args)
     elif args.zed:
         tuning_tool.run_zed_mode(args)
@@ -138,6 +157,10 @@ def run_teleop(
     show_video: bool = False,
     device_name: str = "glove",
     glove_sn: str = "",
+    manus_host: str = "127.0.0.1",
+    manus_port: int = 15020,
+    manus_unit: str = "m",
+    manus_timeout: float = 0.5,
 ):
     """Run teleoperation with MuJoCo simulation.
 
@@ -154,6 +177,10 @@ def run_teleop(
         show_video: Whether to display video with MediaPipe landmarks overlay
         device_name: wuji_sdk device name for Wuji Glove (default "glove")
         glove_sn: Wuji Glove serial number (required when multiple Wuji devices online)
+        manus_host: UDP bind host for MANUS bridge input
+        manus_port: UDP bind port for MANUS bridge input
+        manus_unit: Incoming MANUS coordinate unit (m/cm/mm)
+        manus_timeout: Seconds before stale MANUS frames expire to zeros
     """
     hand_side = hand_side.lower()
     assert hand_side in {"right", "left"}, "hand_side must be 'right' or 'left'"
@@ -212,6 +239,20 @@ def run_teleop(
             sn=glove_sn or None,
         )
 
+    def create_manus_device():
+        if ManusQuantumGlove is None:
+            raise ImportError(
+                "MANUS bridge input is unavailable; expected "
+                "input_devices.manus_quantum to import successfully."
+            )
+        return ManusQuantumGlove(
+            host=manus_host,
+            port=manus_port,
+            hand_side=hand_side,
+            unit=manus_unit,
+            timeout=manus_timeout,
+        )
+
     # Initialize input device
     device_map = {
         "visionpro": lambda: VisionPro(ip=visionpro_ip),
@@ -239,6 +280,7 @@ def run_teleop(
             show_video=show_video,
         ),
         "wuji_glove": create_wuji_glove_device,
+        "manus": create_manus_device,
     }
     if input_device_type not in device_map:
         raise ValueError(f"Unknown input device type: {input_device_type}")
@@ -253,6 +295,8 @@ def run_teleop(
         raise ImportError("realsense mode requires mediapipe, opencv-python, and pyrealsense2")
     if input_device_type == "zed" and ZedMediaPipe is None:
         raise ImportError("zed mode requires mediapipe, opencv-python, and pyzed")
+    if input_device_type == "manus" and ManusQuantumGlove is None:
+        raise ImportError("manus mode requires input_devices.manus_quantum")
 
     input_device = device_map[input_device_type]()
 
@@ -389,6 +433,9 @@ Examples:
   # Live VisionPro input
   mjpython teleop_sim.py --input visionpro --ip <your-vision-pro-ip>
 
+  # Live MANUS bridge input
+  mjpython teleop_sim.py --input manus --hand left --manus-port 15020
+
   # Record input data while using VisionPro
   mjpython teleop_sim.py --input visionpro --record
 
@@ -405,7 +452,7 @@ Examples:
 
     # Input device options
     parser.add_argument('--input', type=str, default=None,
-                        choices=['visionpro', 'mediapipe_replay', 'video', 'realsense', 'zed', 'wuji_glove'],
+                        choices=['visionpro', 'mediapipe_replay', 'video', 'realsense', 'zed', 'wuji_glove', 'manus'],
                         help='Input device type')
 
     # Shortcut options
@@ -445,6 +492,14 @@ Examples:
                         help='wuji_sdk device name for Wuji Glove (default: glove)')
     parser.add_argument('--glove-sn', type=str, default='',
                         help='Wuji Glove serial number (required when multiple Wuji devices online)')
+    parser.add_argument('--manus-host', type=str, default='127.0.0.1',
+                        help='MANUS UDP bind host (default: 127.0.0.1)')
+    parser.add_argument('--manus-port', type=int, default=15020,
+                        help='MANUS UDP bind/listen port (default: 15020)')
+    parser.add_argument('--manus-unit', type=str, default='m', choices=['m', 'cm', 'mm'],
+                        help='Incoming MANUS coordinate unit (default: m)')
+    parser.add_argument('--manus-timeout', type=float, default=0.5,
+                        help='Seconds before stale MANUS frames expire to zeros (default: 0.5)')
 
     args = parser.parse_args()
 
@@ -475,6 +530,8 @@ Examples:
             args.config = 'config/adaptive_analytical_video.yaml'
         elif input_device_type == "wuji_glove":
             args.config = f'config/adaptive_analytical_wuji_glove_{args.hand}.yaml'
+        elif input_device_type == "manus":
+            args.config = f'config/retarget_manus_{args.hand}.yaml'
 
     # Validate paths
     if input_device_type == "mediapipe_replay" and not mediapipe_replay_path:
@@ -498,6 +555,10 @@ Examples:
             fps=args.fps,
             device_name=args.device_name,
             glove_sn=args.glove_sn,
+            manus_host=args.manus_host,
+            manus_port=args.manus_port,
+            manus_unit=args.manus_unit,
+            manus_timeout=args.manus_timeout,
         )
         return
 
@@ -515,6 +576,10 @@ Examples:
         show_video=args.show_video,
         device_name=args.device_name,
         glove_sn=args.glove_sn,
+        manus_host=args.manus_host,
+        manus_port=args.manus_port,
+        manus_unit=args.manus_unit,
+        manus_timeout=args.manus_timeout,
     )
 
     # Save recording if enabled

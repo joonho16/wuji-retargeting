@@ -4,6 +4,7 @@ __pycache__/
 *.pyd
 .Python
 .DS_Store
+.omx/
 
 # Python build artifacts
 *.egg-info/
@@ -19,3 +20,18 @@ MUJOCO_LOG.TXT
 # Temporary files
 *.tmp
 *.log
+
+# Proprietary MANUS SDK mounted at runtime; keep only restore docs.
+manus-sdk/*
+!manus-sdk/README.md
+!manus-sdk/.gitignore
+
+.local/
+
+.env
+
+.env.local
+
+.env.gen3-manus
+
+.env.gen3-vive

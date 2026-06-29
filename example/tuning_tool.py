@@ -25,6 +25,9 @@ Usage:
 
     # ZED camera
     mjpython tuning_tool.py --zed --hand right
+
+    # MANUS bridge input (MediaPipe-order 21x3 UDP JSON)
+    mjpython tuning_tool.py --manus --hand left --manus-port 15020
 """
 
 import argparse
@@ -250,6 +253,24 @@ def run_zed_mode(args):
     _run_live_mode(args, device, "ZED Live")
 
 
+def run_manus_mode(args):
+    """Run tuning tool with MANUS UDP bridge input."""
+    from input_devices.manus_quantum import ManusQuantumGlove
+
+    device = ManusQuantumGlove(
+        host=args.manus_host,
+        port=args.manus_port,
+        hand_side=args.hand,
+        unit=args.manus_unit,
+        timeout=args.manus_timeout,
+    )
+    _run_live_mode(
+        args,
+        device,
+        f"MANUS UDP Live ({args.manus_host}:{args.manus_port}, unit={args.manus_unit})",
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Parameter Tuning Visualization Tool",
@@ -266,6 +287,7 @@ Examples:
   mjpython tuning_tool.py --video data/right.mp4 --hand right
   mjpython tuning_tool.py --realsense --hand right
   mjpython tuning_tool.py --zed --hand right
+  mjpython tuning_tool.py --manus --hand left --manus-port 15020
         """,
     )
 
@@ -285,10 +307,20 @@ Examples:
                         help="Use ZED camera input")
     parser.add_argument("--wuji-glove", action="store_true",
                         help="Use Wuji Glove input via wuji_sdk")
+    parser.add_argument("--manus", action="store_true",
+                        help="Use MANUS UDP JSON bridge input")
     parser.add_argument("--device-name", type=str, default="glove",
                         help="SDK device name for Wuji Glove (default: glove)")
     parser.add_argument("--glove-sn", type=str, default="",
                         help="Wuji Glove serial number (required when multiple Wuji devices online)")
+    parser.add_argument("--manus-host", type=str, default="127.0.0.1",
+                        help="MANUS UDP bind host (default: 127.0.0.1)")
+    parser.add_argument("--manus-port", type=int, default=15020,
+                        help="MANUS UDP bind/listen port (default: 15020)")
+    parser.add_argument("--manus-unit", type=str, default="m", choices=["m", "cm", "mm"],
+                        help="Incoming MANUS coordinate unit (default: m)")
+    parser.add_argument("--manus-timeout", type=float, default=0.5,
+                        help="Seconds before stale MANUS frames expire to zeros (default: 0.5)")
     parser.add_argument("--show-video", action="store_true",
                         help="Show 2D video overlay (camera mode)")
     parser.add_argument("--fps", type=float, default=30.0,
@@ -300,6 +332,8 @@ Examples:
     if args.config == "config/adaptive_analytical_avp.yaml":
         if args.wuji_glove:
             args.config = f"config/adaptive_analytical_wuji_glove_{args.hand}.yaml"
+        elif args.manus:
+            args.config = f"config/retarget_manus_{args.hand}.yaml"
         elif args.video or args.realsense or args.zed:
             args.config = "config/adaptive_analytical_video.yaml"
 
@@ -310,7 +344,9 @@ Examples:
             args.viz_config = "config/tuning_viz.yaml"
 
     # Determine mode
-    if args.wuji_glove:
+    if args.manus:
+        run_manus_mode(args)
+    elif args.wuji_glove:
         run_wuji_glove_mode(args)
     elif args.zed:
         run_zed_mode(args)
