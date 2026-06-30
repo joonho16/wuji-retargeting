@@ -73,7 +73,7 @@ scripts/gen3_manus_teleop.sh full-real
 
 1. `gen3`: `scripts/gen3_vive_compose_rm.sh full-real`
 2. `deadman`: `scripts/gen3_vive_enter_deadman.sh`
-3. `manus`: `docker compose --profile manus-sdk run --rm manus-sdk-udp-bridge-unicast`
+3. `manus`: `MANUS_BUILD_GRPC=1 docker compose --profile manus-sdk run --build --rm manus-sdk-udp-bridge-unicast`
 4. `hand`: `docker compose --profile real-wh110 --profile manus run --rm --service-ports real-wh110-manus`
 
 안전 래치:

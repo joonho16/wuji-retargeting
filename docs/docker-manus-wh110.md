@@ -131,7 +131,7 @@ on the same LAN:
 
 ```bash
 MANUS_CORE_IP=<WINDOWS_MANUS_CORE_IP> HAND=left MANUS_UDP_PORT=15020 \
-  docker compose --profile manus-sdk run --rm manus-sdk-udp-bridge-unicast
+  MANUS_BUILD_GRPC=1 docker compose --profile manus-sdk run --build --rm manus-sdk-udp-bridge-unicast
 ```
 
 This service:
@@ -258,7 +258,7 @@ Terminal 1 (real MANUS bridge):
 
 ```bash
 MANUS_CORE_IP=<WINDOWS_MANUS_CORE_IP> HAND=left MANUS_UDP_PORT=15020 \
-  docker compose --profile manus-sdk run --rm manus-sdk-udp-bridge-unicast
+  MANUS_BUILD_GRPC=1 docker compose --profile manus-sdk run --build --rm manus-sdk-udp-bridge-unicast
 ```
 
 Alternative terminal 1 mock sender:

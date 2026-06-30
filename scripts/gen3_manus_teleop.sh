@@ -155,7 +155,7 @@ full_real_commands() {
   local cdroot="cd $(q "$repo_root")"
   local gen3="$cdroot && GEN3_ROBOT_IP=$(q "${GEN3_ROBOT_IP:-<GEN3_ROBOT_IP>}") GEN3_VIVE_CALIBRATION_DIR=$(q "$GEN3_VIVE_CALIBRATION_DIR") GEN3_VIVE_CALIBRATION=$(q "$GEN3_VIVE_CALIBRATION") ./scripts/gen3_vive_compose_rm.sh full-real"
   local deadman="$cdroot && ./scripts/gen3_vive_enter_deadman.sh"
-  local bridge="$cdroot && MANUS_CORE_IP=$(q "${MANUS_CORE_IP:-<MANUS_CORE_IP>}") HAND=$(q "$HAND") MANUS_UDP_HOST=$(q "$MANUS_UDP_HOST") MANUS_UDP_PORT=$(q "$MANUS_UDP_PORT") docker compose --profile manus-sdk run --rm manus-sdk-udp-bridge-unicast"
+  local bridge="$cdroot && MANUS_BUILD_GRPC=1 MANUS_CORE_IP=$(q "${MANUS_CORE_IP:-<MANUS_CORE_IP>}") HAND=$(q "$HAND") MANUS_UDP_HOST=$(q "$MANUS_UDP_HOST") MANUS_UDP_PORT=$(q "$MANUS_UDP_PORT") docker compose --profile manus-sdk run --build --rm manus-sdk-udp-bridge-unicast"
   local hand="$cdroot && HAND=$(q "$HAND") MANUS_PORT=$(q "$MANUS_PORT") CONFIRM_REAL_WH110=$(q "${CONFIRM_REAL_WH110:-<CONFIRM_REAL_WH110>}") docker compose --profile real-wh110 --profile manus run --rm --service-ports real-wh110-manus"
   printf 'GEN3:   %s\n' "$gen3"
   printf 'DEADMAN:%s\n' " $deadman"
@@ -190,7 +190,7 @@ run_full_real() {
   local cdroot="cd $(q "$repo_root")"
   local cmd_gen3="$cdroot && GEN3_ROBOT_IP=$(q "$GEN3_ROBOT_IP") GEN3_VIVE_CALIBRATION_DIR=$(q "$GEN3_VIVE_CALIBRATION_DIR") GEN3_VIVE_CALIBRATION=$(q "$GEN3_VIVE_CALIBRATION") ./scripts/gen3_vive_compose_rm.sh full-real"
   local cmd_deadman="$cdroot && ./scripts/gen3_vive_enter_deadman.sh"
-  local cmd_bridge="$cdroot && MANUS_CORE_IP=$(q "$MANUS_CORE_IP") HAND=$(q "$HAND") MANUS_UDP_HOST=$(q "$MANUS_UDP_HOST") MANUS_UDP_PORT=$(q "$MANUS_UDP_PORT") docker compose --profile manus-sdk run --rm manus-sdk-udp-bridge-unicast"
+  local cmd_bridge="$cdroot && MANUS_BUILD_GRPC=1 MANUS_CORE_IP=$(q "$MANUS_CORE_IP") HAND=$(q "$HAND") MANUS_UDP_HOST=$(q "$MANUS_UDP_HOST") MANUS_UDP_PORT=$(q "$MANUS_UDP_PORT") docker compose --profile manus-sdk run --build --rm manus-sdk-udp-bridge-unicast"
   local cmd_hand="$cdroot && HAND=$(q "$HAND") MANUS_PORT=$(q "$MANUS_PORT") CONFIRM_REAL_WH110=$(q "$CONFIRM_REAL_WH110") docker compose --profile real-wh110 --profile manus run --rm --service-ports real-wh110-manus"
 
   tmux new-session -d -s "$session" -n gen3 "$cmd_gen3"
@@ -252,8 +252,9 @@ case "$cmd" in
   manus-bridge)
     export HAND=${HAND:-left}
     export MANUS_UDP_PORT=${MANUS_UDP_PORT:-${MANUS_PORT:-15020}}
+    export MANUS_BUILD_GRPC=1
     require_env MANUS_CORE_IP
-    exec docker compose --profile manus-sdk run --rm manus-sdk-udp-bridge-unicast
+    exec docker compose --profile manus-sdk run --build --rm manus-sdk-udp-bridge-unicast
     ;;
   manus-check) exec docker compose --profile manus run --rm --service-ports manus-check ;;
   tuning) exec docker compose --profile manus --profile gui run --rm --service-ports tuning-manus ;;
