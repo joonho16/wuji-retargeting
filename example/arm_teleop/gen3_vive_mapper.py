@@ -128,10 +128,11 @@ class Gen3ViveCalibration:
     tracker_role: str
     tracker_mount_frame: str
     T_planning_source: CalibrationTransform
+    # NativeSession consumes ^tool T_control; the legacy Servo mapper ignores it.
     T_tool_tracker_mount: CalibrationTransform
     linear_scale: float
     angular_scale: float
-    workspace_limits: WorkspaceLimits
+    workspace_limits: WorkspaceLimits | None
     max_linear_mps: float
     max_angular_radps: float
     stale_timeout_s: float
@@ -144,7 +145,9 @@ class Gen3ViveCalibration:
         missing = [name for name in required_transform_names if name not in raw]
         if missing:
             raise MapperError("missing_calibration_field", f"missing calibration fields: {missing}")
-        workspace_raw = _required_mapping(raw, "workspace_limits")
+        workspace_limits = None
+        if raw.get("workspace_limits") is not None:
+            workspace_limits = WorkspaceLimits.from_mapping(_required_mapping(raw, "workspace_limits"))
         calibration = cls(
             source_frame=_required_text(raw, "source_frame"),
             planning_frame=_required_text(raw, "planning_frame"),
@@ -160,7 +163,7 @@ class Gen3ViveCalibration:
             ),
             linear_scale=_positive_finite_float(raw, "linear_scale"),
             angular_scale=_positive_finite_float(raw, "angular_scale"),
-            workspace_limits=WorkspaceLimits.from_mapping(workspace_raw),
+            workspace_limits=workspace_limits,
             max_linear_mps=_positive_finite_float(raw, "max_linear_mps"),
             max_angular_radps=_positive_finite_float(raw, "max_angular_radps"),
             stale_timeout_s=_positive_finite_float(raw, "stale_timeout_s"),
@@ -535,9 +538,9 @@ class Gen3ViveMapperCore:
             self.calibration.T_planning_source.rotation_xyzw,
             source_delta,
         )
-        target_offset = self.calibration.workspace_limits.clamp_position(
-            _scale3(planning_delta, self.calibration.linear_scale)
-        )
+        target_offset = _scale3(planning_delta, self.calibration.linear_scale)
+        if self.calibration.workspace_limits is not None:
+            target_offset = self.calibration.workspace_limits.clamp_position(target_offset)
         if self._neutral_tool_pose is not None:
             target_position = _add3(self._neutral_tool_pose.position_xyz, target_offset)
             if current_tool_pose is not None:

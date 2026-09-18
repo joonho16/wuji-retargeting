@@ -1,0 +1,14 @@
+# Device order: F1 thumb, F2 index, F3 middle, F4 ring, F5 pinky; J1..J4.
+# Model-derived extension pose, not an encoder-zero/reset operation.
+# F2..F5 proximal +Z axes align with palm +Z in hand/body/urdf/left.urdf;
+# the distal flexion joints are straight. Thumb remains extended outwards.
+# Validated against the model and checked against device limits at startup.
+# Physical fit has not yet been verified on the user's hand.
+hand_model: wh110
+units: rad
+left:
+  - [0.100000, 0.000000, -0.017300, 0.000000]
+  - [0.071576, 0.110429, 0.000000, 0.000000]
+  - [0.087266, 0.000051, 0.000000, 0.000000]
+  - [0.083776, -0.090060, 0.000000, 0.000000]
+  - [0.094248, -0.191650, 0.000000, 0.000000]

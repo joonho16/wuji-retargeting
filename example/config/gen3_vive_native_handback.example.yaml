@@ -1,0 +1,29 @@
+# Saved settings for the Gen3 + left WH110 hand-back control point.
+# Copy to .local/gen3_vive_calib/real_gen3_vive_calibration.yaml when restoring
+# this setup. Review the measured axes/offset before enabling real output.
+real_robot_calibration_reviewed: false
+
+source_frame: steamvr_world
+planning_frame: base_link
+tracker_role: gen3_tracker
+tracker_mount_frame: gen3_tool_tracker
+
+# Gen3 (X, Y, Z) = VIVE (-Z, -X, +Y).
+T_planning_source:
+  translation: [0.0, 0.0, 0.0]
+  rotation_xyzw: [0.5, -0.5, -0.5, 0.5]
+
+# Actual TCP -> robot hand-back control point, in TCP axes and metres.
+# User measurement: X=0 mm, Y=-70 mm, Z=+120 mm.
+T_tool_tracker_mount:
+  translation: [0.0, -0.070, 0.120]
+  rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
+
+linear_scale: 1.0
+angular_scale: 1.0
+workspace_limits: null
+max_linear_mps: 0.5
+max_angular_radps: 1.7453292519943295  # 100 deg/s
+linear_deadband_m: 0.003
+angular_deadband_rad: 0.02
+stale_timeout_s: 0.10

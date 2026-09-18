@@ -22,9 +22,21 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
 from moveit_configs_utils import MoveItConfigsBuilder
 
+if __package__:
+    from .gen3_joint_limits import (
+        JointLimitsError, load_settings, model_velocity_limits,
+        query_robot_limits, resolve_velocity_limits, resolve_acceleration_limits,
+    )
+else:
+    from gen3_joint_limits import (
+        JointLimitsError, load_settings, model_velocity_limits,
+        query_robot_limits, resolve_velocity_limits, resolve_acceleration_limits,
+    )
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SERVO_YAML = REPO_ROOT / "example" / "config" / "gen3_vive_moveit_servo.yaml"
+DEFAULT_JOINT_LIMITS_YAML = REPO_ROOT / "example" / "config" / "gen3_joint_limits.yaml"
 
 
 def _env(name: str, default: str) -> str:
@@ -52,6 +64,14 @@ def _load_servo_params(path: Path) -> dict[str, Any]:
         params = yaml.safe_load(handle) or {}
     if not isinstance(params, dict):
         raise SystemExit(f"Servo config must be a YAML mapping: {path}")
+    # Humble uses a nonzero override IN PLACE OF its joint-bound scaling.
+    if params.get("override_velocity_scaling_factor", 0.0) != 0.0:
+        raise JointLimitsError("Servo override_velocity_scaling_factor must be 0.0 to enforce joint limits")
+    params["override_velocity_scaling_factor"] = 0.0
+    if params.get("low_latency_mode", False):
+        raise JointLimitsError("Gen3 acceleration limiting requires low_latency_mode: false")
+    # Accept older operator YAML files without forwarding the removed guard.
+    params.pop("gen3_max_joint_tracking_error", None)
     return {"moveit_servo": params}
 
 
@@ -68,6 +88,7 @@ def _generate_launch_description() -> LaunchDescription:
     use_internal_bus_gripper_comm = _env("GEN3_USE_INTERNAL_BUS_GRIPPER_COMM", "true")
     use_sim_time = _env("GEN3_USE_SIM_TIME", "false")
     servo_yaml = Path(_env("GEN3_SERVO_CONFIG", str(DEFAULT_SERVO_YAML)))
+    joint_limits_yaml = Path(_env("GEN3_JOINT_LIMITS_CONFIG", str(DEFAULT_JOINT_LIMITS_YAML)))
     servo_start_delay_s = float(_env("GEN3_SERVO_START_DELAY_S", "8.0"))
     servo_autostart = _bool_env("GEN3_SERVO_AUTOSTART", True)
 
@@ -78,6 +99,16 @@ def _generate_launch_description() -> LaunchDescription:
         raise SystemExit(f"Kinova MoveIt launch file not found: {robot_launch}")
     if not servo_yaml.exists():
         raise SystemExit(f"Servo config file not found: {servo_yaml}")
+    servo_params = _load_servo_params(servo_yaml)
+    servo_share = Path(get_package_share_directory("moveit_servo"))
+    marker = servo_share / "config/gen3_acceleration_limiting.version"
+    if not marker.is_file() or marker.read_text().strip() != "4":
+        raise JointLimitsError("Gen3 Servo overlay is missing or outdated (requires version 4); rebuild the Gen3 Docker image")
+    if use_fake_hardware == "false":
+        driver_marker = Path(get_package_share_directory("kortex_driver")) / "cyclic_failure_guard.version"
+        if not driver_marker.is_file() or driver_marker.read_text().strip() != "1":
+            raise JointLimitsError("Gen3 Kortex cyclic failure guard is missing; rebuild the Gen3 Docker image")
+    limit_settings = load_settings(joint_limits_yaml, int(dof))
 
     # Match the launch arguments consumed by Kinova's generated MoveIt config.
     mappings = {
@@ -104,6 +135,33 @@ def _generate_launch_description() -> LaunchDescription:
         .to_moveit_configs()
     )
 
+    planning = moveit_config.joint_limits["robot_description_planning"]
+    model_limits = model_velocity_limits(
+        moveit_config.robot_description["robot_description"], planning, int(dof)
+    )
+    robot_limits = None
+    if use_fake_hardware == "false":
+        print(f"Reading Gen3 hard/soft velocity and acceleration limits ({limit_settings.robot_soft_limit_mode})", flush=True)
+        robot_limits = query_robot_limits(
+            robot_ip=robot_ip,
+            username=_env("GEN3_LIMIT_QUERY_USERNAME", "admin"),
+            password=_env("GEN3_LIMIT_QUERY_PASSWORD", "admin"),
+            mode=limit_settings.robot_soft_limit_mode,
+            dof=int(dof),
+            timeout_s=float(_env("GEN3_LIMIT_QUERY_TIMEOUT_S", "15.0")),
+        )
+    resolved_planning, limit_messages = resolve_velocity_limits(
+        planning, model_limits, limit_settings, robot_limits
+    )
+    resolved_planning, acceleration_messages = resolve_acceleration_limits(
+        resolved_planning, limit_settings, robot_limits, int(dof)
+    )
+    moveit_config.joint_limits["robot_description_planning"] = resolved_planning
+    source = "model + robot + file" if robot_limits is not None else "model + file (fake hardware)"
+    print(f"Gen3 Servo joint limits: {source}; config={joint_limits_yaml}", flush=True)
+    for message in limit_messages + acceleration_messages:
+        print(f"  {message}", flush=True)
+
     actions: list[Any] = [
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(str(robot_launch)),
@@ -127,7 +185,8 @@ def _generate_launch_description() -> LaunchDescription:
                     output="screen",
                     parameters=[
                         moveit_config.to_dict(),
-                        _load_servo_params(servo_yaml),
+                        servo_params,
+                        {"gen3_acceleration_limiting": True},
                     ],
                 )
             ],
@@ -159,8 +218,13 @@ def _generate_launch_description() -> LaunchDescription:
 
 
 def main() -> int:
+    # Resolve all limits before starting the driver, Servo, or autostart timer.
+    try:
+        launch_description = _generate_launch_description()
+    except (JointLimitsError, ValueError) as exc:
+        print(f"Gen3 Servo startup refused: {exc}", file=sys.stderr)
+        return 2
     launch_service = LaunchService(argv=sys.argv[1:])
-    launch_description = _generate_launch_description()
     launch_service.include_launch_description(launch_description)
 
     def _shutdown(_signum: int, _frame: Any) -> None:

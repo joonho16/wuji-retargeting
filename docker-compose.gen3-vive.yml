@@ -15,9 +15,12 @@ x-gen3-vive-env: &gen3-vive-env
   GEN3_VIVE_LOW_PASS_ALPHA: ${GEN3_VIVE_LOW_PASS_ALPHA:-1.0}
   GEN3_ROBOT_IP: ${GEN3_ROBOT_IP:-0.0.0.0}
   GEN3_DOF: ${GEN3_DOF:-7}
+  GEN3_HOME_ACTION: ${GEN3_HOME_ACTION:-ready}
   GEN3_GRIPPER: ${GEN3_GRIPPER:-robotiq_2f_85}
   GEN3_GRIPPER_JOINT_NAME: ${GEN3_GRIPPER_JOINT_NAME:-robotiq_85_left_knuckle_joint}
   GEN3_SERVO_CONFIG: ${GEN3_SERVO_CONFIG:-example/config/gen3_vive_moveit_servo.yaml}
+  GEN3_JOINT_LIMITS_CONFIG: ${GEN3_JOINT_LIMITS_CONFIG:-example/config/gen3_joint_limits.yaml}
+  GEN3_LIMIT_QUERY_TIMEOUT_S: ${GEN3_LIMIT_QUERY_TIMEOUT_S:-15.0}
   GEN3_SERVO_START_DELAY_S: ${GEN3_SERVO_START_DELAY_S:-8.0}
   GEN3_SERVO_AUTOSTART: ${GEN3_SERVO_AUTOSTART:-true}
   DISPLAY: ${DISPLAY:-}
@@ -41,6 +44,19 @@ x-gen3-vive-common: &gen3-vive-common
   tty: true
 
 services:
+  operator:
+    <<: *gen3-vive-common
+    profiles: ["tools"]
+    init: true
+    environment:
+      <<: *gen3-vive-env
+      XAUTHORITY: /tmp/operator.xauth
+    volumes:
+      - ${GEN3_OPERATOR_DIR:-./.local/gen3_operator}:/operator:rw
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ${XAUTHORITY:-/dev/null}:/tmp/operator.xauth:ro
+    command: ["python3", "-m", "example.arm_teleop.gen3_operator_keyboard"]
+
   shell:
     <<: *gen3-vive-common
     profiles: ["tools"]
@@ -147,39 +163,56 @@ services:
         exec python3 example/arm_teleop/gen3_vive_servo_stack.py
 
   gen3-servo-real:
+    # Keep the existing service/profile names for operator scripts. Real runs
+    # now start native Twist only; this service does not start MoveIt Servo.
     <<: *gen3-vive-common
     profiles: ["full-real", "real-robot"]
+    # ros2_control requests SCHED_FIFO priority 50 for the 1 kHz hardware loop.
+    # Docker otherwise drops SYS_NICE and defaults to an rtprio limit of zero.
+    cap_add:
+      - SYS_NICE
+    ulimits:
+      rtprio:
+        soft: 99
+        hard: 99
+      memlock:
+        soft: -1
+        hard: -1
     environment:
       <<: *gen3-vive-env
       GEN3_USE_FAKE_HARDWARE: "false"
+      GEN3_LIMIT_QUERY_USERNAME: ${GEN3_LIMIT_QUERY_USERNAME:-admin}
+      GEN3_LIMIT_QUERY_PASSWORD: ${GEN3_LIMIT_QUERY_PASSWORD:-admin}
       GEN3_LAUNCH_RVIZ: ${GEN3_LAUNCH_RVIZ:-false}
     command:
       - bash
       - -lc
       - >
         test "$$GEN3_ROBOT_IP" != "0.0.0.0" ||
-        { echo 'GEN3_ROBOT_IP must be set for real robot Servo stack' >&2; exit 2; };
-        exec python3 example/arm_teleop/gen3_vive_servo_stack.py
+        { echo 'GEN3_ROBOT_IP must be set for real robot native stack' >&2; exit 2; };
+        exec python3 -m example.arm_teleop.gen3_native_stack
 
   wrapper-real:
     <<: *gen3-vive-common
     profiles: ["real-robot", "full-real"]
     environment:
       <<: *gen3-vive-env
-      GEN3_VIVE_TWIST_TOPIC: ${GEN3_VIVE_TWIST_TOPIC:-/servo_node/delta_twist_cmds}
+      GEN3_VIVE_TWIST_TOPIC: ${GEN3_VIVE_TWIST_TOPIC:-/twist_controller/commands}
+      GEN3_LIMIT_QUERY_USERNAME: ${GEN3_LIMIT_QUERY_USERNAME:-admin}
+      GEN3_LIMIT_QUERY_PASSWORD: ${GEN3_LIMIT_QUERY_PASSWORD:-admin}
+    volumes:
+      - ${GEN3_VIVE_CALIBRATION_DIR:-./example/config}:/calib:ro
+      - ${GEN3_OPERATOR_DIR:-./.local/gen3_operator}:/operator:ro
     command:
       - bash
       - -lc
       - >
         test -n "$${GEN3_VIVE_CALIBRATION:-}" ||
         { echo 'GEN3_VIVE_CALIBRATION must point to reviewed real calibration YAML' >&2; exit 2; };
-        exec python3 -m example.arm_teleop.gen3_vive_ros2_wrapper
-        --spin
-        --no-dry-run
-        --real-robot
-        --deadman-source physical_topic
+        exec python3 -m example.arm_teleop.gen3_native_teleop
+        --operator-state /operator/intent.json
+        --home-action "$$GEN3_HOME_ACTION"
         --physical-deadman-topic "$$GEN3_VIVE_PHYSICAL_DEADMAN_TOPIC"
-        --real-robot-latch
         --calibration-path "$$GEN3_VIVE_CALIBRATION"
         --low-pass-alpha "$$GEN3_VIVE_LOW_PASS_ALPHA"
         --twist-topic "$$GEN3_VIVE_TWIST_TOPIC"

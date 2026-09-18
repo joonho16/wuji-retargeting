@@ -47,6 +47,7 @@ Input device types:
 import argparse
 import os
 import pickle
+import signal
 import sys
 import time
 from pathlib import Path
@@ -444,6 +445,8 @@ def run_teleop(
     manus_port: int = 15020,
     manus_unit: str = "m",
     manus_timeout: float = 0.5,
+    operator_state: str = "",
+    open_pose_path: str = "config/wh110_open_pose.yaml",
 ):
     """Run teleoperation with real hardware.
 
@@ -469,6 +472,15 @@ def run_teleop(
     assert hand_side in {"right", "left"}, "hand_side must be 'right' or 'left'"
     assert hand_model in {"wh110", "wh120"}, f"hand_model must be 'wh110' or 'wh120', got {hand_model}"
     require_wh110_confirmation(hand_model)
+    operator = None
+    opened = None
+    if operator_state:
+        if hand_model != "wh110":
+            raise ValueError("Shared A/B hold currently supports WH110 only")
+        from example.operator_hold import IntentReader, TELEOP
+        from example.wh110_hold import HeldWh110Backend, load_open_pose
+        operator = IntentReader(Path(operator_state))
+        opened = load_open_pose(Path(__file__).parent / open_pose_path, hand_side)
 
     # backend/input_device are set up front so the finally can always check them and
     # so a failure during setup never leaves a reference unbound. The hand is
@@ -607,6 +619,8 @@ def run_teleop(
                 current_limit=current_limit,
                 handedness=hand_side,
             )
+        elif operator is not None:
+            backend = HeldWh110Backend(state_path=operator_state, open_pose=opened, hand_serial=hand_serial)
         else:
             backend = Wh110Backend(hand_serial=hand_serial)
 
@@ -619,8 +633,19 @@ def run_teleop(
 
         frame_count = 0
         fps_start_time = time.time()
+        last_retarget_token = None
 
         while True:
+            sampled_at = time.monotonic()
+            intent = None
+            if operator is not None:
+                backend.check()
+                intent = operator.read(now=sampled_at)
+                if intent.mode != TELEOP:
+                    # The independent output worker handles hold/open, even
+                    # without MANUS frames or while retargeting is stalled.
+                    time.sleep(0.01)
+                    continue
             # Get finger data
             fingers_data = input_device.get_fingers_data()
             fingers_pose = fingers_data[f"{hand_side}_fingers"]  # (21, 3)
@@ -647,6 +672,9 @@ def run_teleop(
                 })
 
             # Retarget to joint angles
+            if intent is not None and intent.token != last_retarget_token:
+                retargeter.reset()
+                last_retarget_token = intent.token
             qpos = retargeter.retarget(fingers_pose)  # (20,)
 
             # FPS counter
@@ -657,7 +685,11 @@ def run_teleop(
                 print(f"FPS: {fps:.1f}")
 
             # Send to hardware via backend (WH110 or WH120, decided at init).
-            backend.send(qpos if _qpos_perm is None else qpos[_qpos_perm])
+            target = qpos if _qpos_perm is None else qpos[_qpos_perm]
+            if operator is not None:
+                backend.send(target, sampled_at=sampled_at, token=intent.token)
+            else:
+                backend.send(target)
 
 
     except KeyboardInterrupt:
@@ -775,6 +807,10 @@ Examples:
                         help='Incoming MANUS coordinate unit (default: m)')
     parser.add_argument('--manus-timeout', type=float, default=0.5,
                         help='Seconds before stale MANUS frames expire to zeros (default: 0.5)')
+    parser.add_argument('--operator-state', default=os.environ.get('GEN3_OPERATOR_STATE', ''),
+                        help='Shared A/B hold file; empty preserves standalone hand behavior')
+    parser.add_argument('--open-pose', default='config/wh110_open_pose.yaml',
+                        help='WH110 extended-hand target, used while B is held')
 
     # Hardware backend selection + WH120 connection params.
     parser.add_argument('--hand-model', type=str, default=None, choices=['wh110', 'wh120'],
@@ -859,6 +895,11 @@ Examples:
         )
         return
 
+    # Docker stop must run the same backend cleanup as Ctrl+C.
+    def interrupted(_signum, _frame):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, interrupted)
+
     # Run teleoperation
     log = run_teleop(
         hand_side=args.hand,
@@ -883,6 +924,8 @@ Examples:
         manus_port=args.manus_port,
         manus_unit=args.manus_unit,
         manus_timeout=args.manus_timeout,
+        operator_state=args.operator_state,
+        open_pose_path=args.open_pose,
     )
 
     # Save recording if enabled

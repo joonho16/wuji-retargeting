@@ -2,6 +2,10 @@
 
 이 폴더는 이제 `wuji-retargeting` 원본을 기반으로 한 **Gen3 + MANUS + WH110 teleop용 로컬 프로젝트**입니다. Python 패키지 이름(`wuji_retargeting`)은 호환성을 위해 그대로 두고, 실행은 아래 단일 런처로 통일합니다.
 
+`full-real`의 팔 제어는 **native Twist**입니다. MANUS → 왼쪽 WH110 경로와 아래 실행 명령은
+기존과 같습니다. 현재 저장된 팔 설정은 병진 1배·회전 1배, 최대 0.5m/s·100°/s입니다.
+[native 제어 및 정지 처리](docs/gen3-native-teleop.md)를 참고하세요.
+
 ## 0. 최초 1회 준비
 
 ```bash
@@ -72,9 +76,22 @@ scripts/gen3_manus_teleop.sh full-real
 이 명령은 tmux 세션 `gen3-manus-teleop`에 다음 네 창을 만듭니다.
 
 1. `gen3`: `scripts/gen3_vive_compose_rm.sh full-real`
-2. `deadman`: `scripts/gen3_vive_enter_deadman.sh`
+2. `deadman`: A/B 누름 조작 창 (`scripts/gen3_vive_enter_deadman.sh`)
 3. `manus`: `MANUS_BUILD_GRPC=1 docker compose --profile manus-sdk run --build --rm manus-sdk-udp-bridge-unicast`
 4. `hand`: `docker compose --profile real-wh110 --profile manus run --rm --service-ports real-wh110-manus`
+
+뜨는 **Gen3 + WH110 control** 창을 클릭해서 포커스를 준 뒤 사용합니다.
+
+- **A를 누르는 동안:** VIVE로 팔, MANUS로 왼쪽 WH110 제어.
+- **B를 누르는 동안:** Gen3 저장 액션 `ready`로 이동하면서 손가락을 편 자세로 이동.
+- **키 해제 / 창 포커스 상실 / A+B 동시 누름:** 팔 정지, 손 현재 위치 유지.
+- **Q:** 조작 창에서 누르면 팔·손을 정지하고 텔레옵 스택과 조작 창을 함께 종료.
+- 기존 버전을 끌 때는 키를 놓고 `hand`, `gen3`, `manus`, `deadman` 창에서 차례로 Ctrl+C.
+
+Enter 토글은 사용하지 않습니다. 모드를 바꿀 때는 두 키를 모두 놓았다가 누르세요.
+Linux 데스크톱의 `DISPLAY`가 필요하며 기존 full-real 명령은 그대로 사용합니다.
+손 펴기 목표는 `example/config/wh110_open_pose.yaml`, 액션 이름은 `GEN3_HOME_ACTION=ready`입니다.
+통합 실행은 `GEN3_OPERATOR_STATE`를 자동 설정해 손에도 A/B 입력을 적용합니다.
 
 안전 래치:
 
@@ -92,5 +109,16 @@ scripts/gen3_manus_teleop.sh deadman
 MANUS_CORE_IP=192.168.50.132 HAND=left scripts/gen3_manus_teleop.sh manus-bridge
 HAND=left MANUS_PORT=15020 CONFIRM_REAL_WH110=I_UNDERSTAND_WH110_MOVES scripts/gen3_manus_teleop.sh hand
 ```
+
+## 5. 팔 이동 범위와 속도 설정
+
+실기 설정 파일은 `.local/gen3_vive_calib/real_gen3_vive_calibration.yaml`입니다.
+`workspace_limits` 항목 전체를 삭제하거나 `workspace_limits: null`로 설정하면
+deadman 기준 위치에 대한 목표 이동 범위 제한을 끕니다. `max_linear_mps`와
+`max_angular_radps` 속도 상한, deadman, native controller 수신 timeout은 계속 적용됩니다.
+native 경로에는 MoveIt Servo 충돌·특이점 검사나 Servo 관절 가속도 제한이 적용되지 않습니다.
+파일 수정은 mapper 재시작 후 반영됩니다. mapper 소스도 변경했다면 기존 실행을
+종료한 뒤 `scripts/gen3_manus_teleop.sh gen3 full-real`로 다시 실행하세요.
+이 런처는 Docker 이미지를 빌드한 뒤 수신기와 Gen3 스택을 시작합니다.
 
 복원/개인 GitHub publish 절차는 `docs/restore-and-publish.md`를 보세요. publish/push는 사용자가 직접 수행합니다.

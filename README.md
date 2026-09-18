@@ -22,13 +22,13 @@ https://github.com/user-attachments/assets/72116289-7a33-4a6b-83ca-fb4d9aaece0d
 │   ├── viz/                          // Visualization tools for parameter tuning
 │   └── wuji-description/             // URDF and mesh submodule for Wuji Hand
 ├── example/                          // Demonstration scripts for simulation and hardware control
-│   ├── arm_teleop/                   // Gen3 VIVE receiver, mapper, ROS2 wrapper, Servo stack launcher
+│   ├── arm_teleop/                   // Gen3 VIVE receiver, native Twist teleop and driver launcher
 │   ├── input_devices/                // Input device modules (Vision Pro, MediaPipe replay, video, RealSense, ZED, Wuji Glove, MANUS UDP)
 │   ├── config/                       // YAML configuration files, including Gen3 VIVE calibration templates
 │   ├── data/                         // Sample recording data
 │   └── utils/                        // Helper utilities
 ├── scripts/                          // One-shot smoke/tests plus Gen3/MANUS launch wrappers
-├── docker-compose.gen3-vive.yml      // ROS2/MoveIt Servo Compose stack for Gen3 VIVE teleop
+├── docker-compose.gen3-vive.yml      // Gen3 native Twist real stack; legacy Servo fake profiles
 ├── compose.yaml                      // MANUS/WH110 Docker Compose stack
 ├── requirements.txt                  // Python dependencies
 └── README.md
@@ -60,6 +60,13 @@ scripts/gen3_manus_teleop.sh help
 scripts/gen3_manus_teleop.sh status
 scripts/gen3_manus_teleop.sh full-real --print
 ```
+
+`full-real` now uses native Gen3 Twist, with controller/session command timeouts.
+The launcher commands and MANUS → left WH110 retargeting path are preserved.
+In the operator window, hold **A** for arm + hand teleop, or **B** for the saved
+Gen3 `ready` action + an extended hand pose. Release to stop both; press **Q**
+in the operator window to stop and shut down the teleop stack. See
+[`Native Gen3 operation`](docs/gen3-native-teleop.md) for units, limits and stop behavior.
 
 The real-hardware path still requires explicit safety latches and reviewed local
 calibration. See [`HOWTO.md`](HOWTO.md) for operator commands and

@@ -15,19 +15,20 @@ T_planning_source:
   translation: [0.0, 0.0, 0.0]
   rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
 
-# Reserved transform from the tracker body to the intended tool/control frame.
-# The current relative target-pose controller validates this field but uses
-# T_planning_source.rotation_xyzw for practical command-axis mapping; keep
-# identity for handheld first-pass tests unless a later mount-correction path
-# explicitly consumes this transform.
+# Native path: ^tool T_control for the robot hand's virtual tracker/control point.
+# translation: actual TCP -> desired control point, in TCP axes, in METRES.
+# rotation_xyzw: control-frame orientation expressed in the actual TCP frame.
+# T_base_control = T_base_tool * T_tool_tracker_mount. Zero offset uses the TCP.
+# The physical human tracker position is mapped to this robot control point.
 T_tool_tracker_mount:
   translation: [0.0, 0.0, 0.0]
   rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
 
 linear_scale: 1.0
 angular_scale: 1.0
-# Per-axis tracker-driven tool offset limits, relative to the neutral tool pose
+# Per-axis tracker-driven control-point limits, relative to its neutral pose
 # captured when deadman changes false -> true.
+# Optional: omit workspace_limits or set it to null to disable offset clamping.
 workspace_limits:
   x: [-0.25, 0.25]
   y: [-0.25, 0.25]

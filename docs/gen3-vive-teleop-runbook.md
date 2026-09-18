@@ -1,5 +1,10 @@
 # Gen3 VIVE teleop runbook
 
+> **Real-hardware path updated:** `full-real` and `real-robot` now run native Twist.
+> Use [the native runbook](gen3-native-teleop.md) and [HOWTO](../HOWTO.md).
+> The Servo architecture and real-wrapper descriptions below are historical;
+> `full-fake` / `full-fake-rviz` remain available for legacy Servo simulation.
+
 This runbook covers the Linux-side Gen3 VIVE teleoperation path. The Windows
 VIVE/OpenVR sender stays external and must not be patched from this repository.
 
@@ -46,6 +51,7 @@ linear_scale: 1.0
 angular_scale: 1.0
 # Per-axis tracker-driven tool offset limits, relative to the neutral tool pose
 # captured when deadman changes false -> true.
+# Optional: omit workspace_limits or set it to null to disable offset clamping.
 workspace_limits:
   x: [-0.25, 0.25]
   y: [-0.25, 0.25]
@@ -62,12 +68,211 @@ stale_timeout_s: 0.10
 The mapper refuses malformed calibration fields, non-unit quaternions,
 non-finite values, inverted workspace limits, and non-positive gains/limits.
 
+`workspace_limits` is optional. Omit the entire field or set
+`workspace_limits: null` to follow tracker-driven target offsets without a
+position box. When supplied, all three axis ranges must be valid; an empty or
+partial mapping is rejected. Speed limits, deadbands, deadman and stale-input
+stops still apply. MoveIt Servo joint, collision and singularity checks are
+independent of this mapper setting. Configuration is read at startup; rebuild
+the Docker image after mapper code changes and restart the mapper after editing
+the calibration YAML.
+
 `T_planning_source.rotation_xyzw` is the rotation that maps SteamVR/source axes
 into Gen3 planning-frame axes. This is the knob to fix cases like "tracker X
-should become robot -Z". `T_tool_tracker_mount` is currently kept as a validated
-calibration/reserved mount field; the relative target-pose controller does not
-use it for the linear command path, and the practical first-pass value for
-handheld tests is identity.
+should become robot -Z". In the native path, `T_tool_tracker_mount` defines the
+robot control point relative to the actual TCP: `T_base_control = T_base_tool *
+T_tool_tracker_mount`. Translation is TCP-to-control-point in TCP axes, metres.
+The native controller follows this point and shifts its Twist back to the TCP,
+including the rotation-induced linear velocity. Identity retains TCP following.
+The legacy Servo mapper does not consume this mount field.
+
+## Per-joint velocity and acceleration limits
+
+`GEN3_JOINT_LIMITS_CONFIG` selects the additional arm cap file, defaulting
+to `example/config/gen3_joint_limits.yaml`. Velocity is in **rad/s** and
+acceleration is in **rad/s²**.
+The default file has no additional caps. For example, to limit joints 1 and 2:
+
+```yaml
+robot_soft_limit_mode: ANGULAR_TRAJECTORY
+joint_limits:
+  joint_1: {max_velocity: 0.3, max_acceleration: 1.0}
+  joint_2: {max_acceleration: 0.8}
+```
+
+Unlisted joints retain the model/robot limits. `joint_1` through `joint_6` are
+valid for both robots; `joint_7` requires `GEN3_DOF=7`. Unknown joints, duplicate
+YAML keys, disabled limits and non-positive/non-finite values stop startup.
+Velocity and acceleration overrides are independent. Gripper limits are separate.
+
+Before launching any driver or Servo actions, the stack calculates each cap:
+
+- Fake hardware: `min(URDF velocity, enabled MoveIt velocity, optional file cap)`.
+- Real hardware: also include both the robot hard limit and the selected robot
+  soft limit. The stack reads `ControlConfig.GetKinematicHardLimits()` and
+  `GetKinematicSoftLimits()` through an authenticated Kortex TCP session, validates
+  the returned joint count and values, and converts deg/s to rad/s.
+- Acceleration: `min(enabled MoveIt acceleration, robot hard/soft acceleration,
+  optional file cap)`, converting deg/s² to rad/s². Fake hardware omits robot
+  discovery. Every joint must have a valid bound. Profiles without joint
+  acceleration values are rejected; use an angular profile with those values.
+
+The resulting values are passed to the Servo node as
+`robot_description_planning.joint_limits.<joint>.max_velocity`; startup logs show
+every source and final cap, including `max_acceleration`.
+Larger file values cannot raise existing ceilings.
+Servo's `override_velocity_scaling_factor` must remain `0.0`; other values are
+rejected because Humble can otherwise bypass its joint-bound scaling.
+
+The Docker image builds a pinned Humble 2.5.10 Servo overlay because stock
+Humble's Butterworth filter does **not** enforce acceleration bounds. After
+Servo calculates joint velocities and applies speed limits, the overlay bounds
+each velocity change by `max_acceleration * publish_period` and integrates from
+the previous published position reference. It handles continuous-joint angle
+wrapping and bypasses the old Butterworth position filter to avoid adding a
+second source of lag. `low_latency_mode` must stay false for the fixed period.
+Startup requires overlay version 4, including the continuous-joint IK fix and
+removal of the 0.1 rad tracking-error latch. Real hardware also requires the Kortex cyclic-failure
+guard overlay (version 1).
+An absent or older overlay stops startup before launching any driver. The startup log must include
+`Gen3 per-joint reference acceleration limiting enabled (Butterworth bypassed)`.
+
+The published reference and feedback history remain continuous across ±π, but
+continuous-joint **IK seeds** are normalized into [-π, π]. Feeding unwrapped
+seeds to KDL reproduced a non-finite approximate IK solution after motion began
+near the angle boundary, followed by `Gen3 acceleration limiter rejected an
+invalid joint reference`. This message means invalid input, not an acceleration
+cap violation. Version 2 fixes the seed conversion, checks IK results for finite
+values and holds the last reference on an invalid result. Repeated diagnostics
+are throttled to once per second. This reproduction does not establish the
+hardware cause of a subsequent Joint Fault.
+
+Collision/singularity/position safety holds, zero commands and deadman release
+take priority over acceleration smoothing; restart ramps from zero commanded
+velocity. These are limits on the discrete **Servo position references**. They
+are not a hard physical acceleration guarantee: controller interpolation,
+delivery timing and the robot's tracking response still need feedback checks.
+The change does not establish the cause of a previous Joint Fault.
+If joint feedback exceeds `incoming_command_timeout`, Servo stops advancing
+the reference. Fresh timestamps with a stationary joint are a separate case:
+faulted hardware can continue publishing joint feedback while rejecting motion.
+Version 4 removes the added 0.1 rad tracking-error check and its restart latch.
+The legacy `gen3_max_joint_tracking_error` YAML key is ignored. A reference/feedback
+gap alone no longer triggers that stop; this removal does not resolve the hardware
+Joint Fault reported before the tracking-error message. Joint speed/acceleration
+bounds, collision/singularity/position holds, stale-feedback handling and the
+Kortex communication-failure guard remain active.
+
+The position-limit warning checks the **computed reference**, not just the
+current measured angle. Its added diagnostic reports measured/reference angles,
+requested velocity, model bounds and margin. For this 7-DOF model, joint 4 has
+bounds ±2.57 rad and the configured 0.1 rad margin stops outward commands near
+±2.47 rad (141.52°).
+
+Per-joint acceleration saturation can change the Cartesian path
+and response while ramping; the limiter is not a path planner.
+
+Soft limits are stored by control mode. `robot_soft_limit_mode` defaults to
+`ANGULAR_TRAJECTORY`; it can also select `CARTESIAN_TRAJECTORY`,
+`ANGULAR_JOYSTICK`, or `CARTESIAN_JOYSTICK`. This explicitly chooses the stored
+profile to impose in Servo; it does not change the robot's control mode or assume
+that the low-level Kortex driver enforces that high-level profile. The lookup
+does not change robot limits or send motion commands.
+
+Real discovery is mandatory: connection, authentication, SDK, timeout, mode or
+invalid-limit errors stop startup instead of falling back to model-only limits.
+`GEN3_LIMIT_QUERY_TIMEOUT_S` (default 15 seconds) bounds the whole query including
+SDK connection/cleanup. `GEN3_LIMIT_QUERY_USERNAME` and
+`GEN3_LIMIT_QUERY_PASSWORD` default to the Kinova factory credentials (`admin`).
+These are lookup credentials only; driver authentication remains configured by
+the installed Kinova launch package. Credentials are not printed or passed as
+command-line arguments. The Docker image installs the pinned official Kortex
+2.x Python SDK. Host ROS installations also require the same Servo overlay;
+installing only the Python SDK does not enable acceleration limiting.
+
+To edit caps without rebuilding the image, copy the file into the existing
+calibration mount and set its container path:
+
+```bash
+cp example/config/gen3_joint_limits.yaml .local/gen3_vive_calib/gen3_joint_limits.yaml
+# Edit .local/gen3_vive_calib/gen3_joint_limits.yaml, then launch with:
+export GEN3_JOINT_LIMITS_CONFIG=/calib/gen3_joint_limits.yaml
+```
+
+Use `GEN3_VIVE_CALIBRATION_DIR=.local/gen3_vive_calib` as in real bring-up below.
+Rebuild the image once for this code/SDK change. Limits are a startup snapshot:
+restart the Servo stack after changing the YAML, selected profile or robot's
+stored limits. This applies to the Servo teleoperation path; the separately
+launched `move_group` and other command sources keep their own configuration.
+Actual hardware speed and acceleration tracking still require verification
+through joint feedback.
+
+The output regression test launches fake hardware and checks acceleration during
+steps/reversals, zero-command holds, collision holds and loss of joint feedback:
+
+```bash
+docker run --rm --network none wuji-retargeting:gen3-vive-ros2-humble \
+  python3 tests/helpers/gen3_servo_acceleration_runtime.py
+docker run --rm --network none wuji-retargeting:gen3-vive-ros2-humble \
+  python3 tests/helpers/gen3_servo_cartesian_runtime.py
+docker run --rm --network none wuji-retargeting:gen3-vive-ros2-humble \
+  python3 tests/helpers/gen3_kortex_cyclic_runtime.py
+```
+
+The Cartesian regression runs only Servo with synthetic wrapped joint feedback
+and tracking lag. It exercises 1.0/1.5 rad/s angular commands and reversals near
+±π, checking finite outputs, angle continuity and reference speed/acceleration
+bounds. It also introduces a reference/feedback gap above 0.1 rad, checks that
+zero commands hold, and verifies subsequent motion works without a restart.
+The Kortex test invokes the
+actual driver/SDK without initialization or a robot connection and verifies that
+read/write failure stays latched. All runtime tests refuse containers with a
+non-loopback network interface.
+
+The Kortex overlay retains driver 0.2.3 and C++ SDK 2.5. A cyclic read/write
+exception is logged and returned to ros2_control as `ERROR`. It does not perform
+another `RefreshFeedback` RPC from the exception handler or reuse the failed
+session. Reactivation requires a process restart. Driver logging defaults to
+INFO instead of forcing DEBUG on the 1 kHz loop. This contains the observed
+uncaught `Future already retrieved` failure; it does not repair the underlying
+network/SDK timeout or prove a hardware Joint Fault is resolved.
+
+If motion is slow but vibrates only while the tracker moves, do not assume a
+stronger low-pass filter will fix it. The mapper's default `low_pass_alpha=1.0`
+does no input smoothing. Its pose-follow command is proportional to remaining
+position/orientation error with an implicit gain of 1/s, so small errors already
+produce small speeds even with a high speed cap. Acceleration limiting bounds
+abrupt command changes; it does not diagnose feedback latency, tracker motion
+noise, controller interpolation or hardware issues.
+
+API references: [Gen3 ControlConfig](https://github.com/Kinovarobotics/Kinova-kortex2_Gen3_G3L/blob/master/api_python/doc/markdown/summary_pages/ControlConfig.md),
+[KinematicLimits units](https://github.com/Kinovarobotics/Kinova-kortex2_Gen3_G3L/blob/master/api_python/doc/markdown/messages/ControlConfig/KinematicLimits.md).
+
+## Real-time scheduling for the hardware loop
+
+The real Gen3 service grants `SYS_NICE`, an `rtprio` limit of 99, and unlimited
+`memlock`, following the [ros2_control Humble Docker configuration](https://control.ros.org/humble/doc/ros2_control/controller_manager/doc/userdoc.html#determinism).
+The controller manager requests `SCHED_FIFO` priority 50 for its 1 kHz hardware
+loop. Without these permissions, container root still receives
+`Operation not permitted` and the loop runs with ordinary scheduling, making it
+more vulnerable to timing jitter. `memlock` permits memory locking; it does not
+itself enable real-time scheduling or lock memory automatically.
+
+These are container creation settings, so recreate the real Gen3 service to
+apply them; an image rebuild or `docker restart` alone is insufficient. They
+apply only to `gen3-servo-real`, not the receiver, wrapper or fake hardware.
+For a check that never launches the robot, run:
+
+```bash
+docker compose -f docker-compose.gen3-vive.yml --profile real-robot \
+  run --rm --no-deps --entrypoint python3 gen3-servo-real -c \
+  'import os; os.sched_setscheduler(0, os.SCHED_FIFO, os.sched_param(50)); print("SCHED_FIFO:", os.sched_getscheduler(0), "priority:", os.sched_getparam(0).sched_priority); os.sched_setscheduler(0, os.SCHED_OTHER, os.sched_param(0))'
+```
+
+Expected output is `SCHED_FIFO: 1 priority: 50`. This grants scheduling
+permission; it does not guarantee that every control cycle meets its deadline
+or that Kortex UDP feedback cannot time out. If timeouts persist, retain the
+fault bits before clearing faults and measure loop latency and network loss.
 
 ## Safety state machine
 

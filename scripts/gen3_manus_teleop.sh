@@ -25,7 +25,7 @@ Gen3 VIVE commands:
                                Profiles include receiver, wrapper, servo,
                                full-fake, full-fake-rviz, full-real, real-robot,
                                deadman, tools, test, debug.
-  deadman [args...]            Run interactive Gen3 keyboard deadman helper
+  deadman [args...]            Open A/B hold window (A teleop, B ready + open)
 
 MANUS / WH110 commands:
   manus-bridge                 Run MANUS SDK -> UDP bridge via MANUS Core
@@ -110,6 +110,9 @@ set_full_real_defaults() {
   export MANUS_HOST=${MANUS_HOST:-0.0.0.0}
   export GEN3_VIVE_CALIBRATION_DIR=${GEN3_VIVE_CALIBRATION_DIR:-.local/gen3_vive_calib}
   export GEN3_VIVE_CALIBRATION=${GEN3_VIVE_CALIBRATION:-/calib/real_gen3_vive_calibration.yaml}
+  export GEN3_OPERATOR_DIR=${GEN3_OPERATOR_DIR:-$repo_root/.local/gen3_operator}
+  export GEN3_OPERATOR_STATE=/operator/intent.json
+  export GEN3_HOME_ACTION=${GEN3_HOME_ACTION:-ready}
 }
 
 calibration_host_file() {
@@ -131,7 +134,8 @@ require_full_real_env() {
   set_full_real_defaults
   require_cmd docker
   require_cmd tmux
-  require_env GEN3_ROBOT_IP MANUS_CORE_IP
+  require_env GEN3_ROBOT_IP MANUS_CORE_IP DISPLAY
+  mkdir -p "$GEN3_OPERATOR_DIR"
   if [[ ${CONFIRM_REAL_WH110:-} != "I_UNDERSTAND_WH110_MOVES" ]]; then
     echo "Refusing real WH110 startup: set CONFIRM_REAL_WH110=I_UNDERSTAND_WH110_MOVES after staged checks." >&2
     exit 64
@@ -153,10 +157,10 @@ require_full_real_env() {
 full_real_commands() {
   set_full_real_defaults
   local cdroot="cd $(q "$repo_root")"
-  local gen3="$cdroot && GEN3_ROBOT_IP=$(q "${GEN3_ROBOT_IP:-<GEN3_ROBOT_IP>}") GEN3_VIVE_CALIBRATION_DIR=$(q "$GEN3_VIVE_CALIBRATION_DIR") GEN3_VIVE_CALIBRATION=$(q "$GEN3_VIVE_CALIBRATION") ./scripts/gen3_vive_compose_rm.sh full-real"
-  local deadman="$cdroot && ./scripts/gen3_vive_enter_deadman.sh"
+  local gen3="$cdroot && GEN3_OPERATOR_DIR=$(q "$GEN3_OPERATOR_DIR") GEN3_HOME_ACTION=$(q "$GEN3_HOME_ACTION") GEN3_ROBOT_IP=$(q "${GEN3_ROBOT_IP:-<GEN3_ROBOT_IP>}") GEN3_VIVE_CALIBRATION_DIR=$(q "$GEN3_VIVE_CALIBRATION_DIR") GEN3_VIVE_CALIBRATION=$(q "$GEN3_VIVE_CALIBRATION") ./scripts/gen3_vive_compose_rm.sh full-real"
+  local deadman="$cdroot && GEN3_OPERATOR_DIR=$(q "$GEN3_OPERATOR_DIR") DISPLAY=$(q "${DISPLAY:-}") XAUTHORITY=$(q "${XAUTHORITY:-}") ./scripts/gen3_vive_enter_deadman.sh"
   local bridge="$cdroot && MANUS_BUILD_GRPC=1 MANUS_CORE_IP=$(q "${MANUS_CORE_IP:-<MANUS_CORE_IP>}") HAND=$(q "$HAND") MANUS_UDP_HOST=$(q "$MANUS_UDP_HOST") MANUS_UDP_PORT=$(q "$MANUS_UDP_PORT") docker compose --profile manus-sdk run --build --rm manus-sdk-udp-bridge-unicast"
-  local hand="$cdroot && HAND=$(q "$HAND") MANUS_PORT=$(q "$MANUS_PORT") CONFIRM_REAL_WH110=$(q "${CONFIRM_REAL_WH110:-<CONFIRM_REAL_WH110>}") docker compose --profile real-wh110 --profile manus run --rm --service-ports real-wh110-manus"
+  local hand="$cdroot && GEN3_OPERATOR_DIR=$(q "$GEN3_OPERATOR_DIR") GEN3_OPERATOR_STATE=$(q "$GEN3_OPERATOR_STATE") HAND=$(q "$HAND") MANUS_PORT=$(q "$MANUS_PORT") CONFIRM_REAL_WH110=$(q "${CONFIRM_REAL_WH110:-<CONFIRM_REAL_WH110>}") docker compose --profile real-wh110 --profile manus run --rm --service-ports real-wh110-manus"
   printf 'GEN3:   %s\n' "$gen3"
   printf 'DEADMAN:%s\n' " $deadman"
   printf 'MANUS:  %s\n' "$bridge"
@@ -188,19 +192,24 @@ run_full_real() {
   fi
 
   local cdroot="cd $(q "$repo_root")"
-  local cmd_gen3="$cdroot && GEN3_ROBOT_IP=$(q "$GEN3_ROBOT_IP") GEN3_VIVE_CALIBRATION_DIR=$(q "$GEN3_VIVE_CALIBRATION_DIR") GEN3_VIVE_CALIBRATION=$(q "$GEN3_VIVE_CALIBRATION") ./scripts/gen3_vive_compose_rm.sh full-real"
-  local cmd_deadman="$cdroot && ./scripts/gen3_vive_enter_deadman.sh"
+  local cmd_gen3="$cdroot && GEN3_OPERATOR_DIR=$(q "$GEN3_OPERATOR_DIR") GEN3_HOME_ACTION=$(q "$GEN3_HOME_ACTION") GEN3_ROBOT_IP=$(q "$GEN3_ROBOT_IP") GEN3_VIVE_CALIBRATION_DIR=$(q "$GEN3_VIVE_CALIBRATION_DIR") GEN3_VIVE_CALIBRATION=$(q "$GEN3_VIVE_CALIBRATION") ./scripts/gen3_vive_compose_rm.sh full-real"
+  local cmd_deadman="$cdroot && GEN3_OPERATOR_DIR=$(q "$GEN3_OPERATOR_DIR") GEN3_MANUS_TMUX_SESSION=$(q "$session") DISPLAY=$(q "${DISPLAY:-}") XAUTHORITY=$(q "${XAUTHORITY:-}") ./scripts/gen3_vive_enter_deadman.sh"
   local cmd_bridge="$cdroot && MANUS_BUILD_GRPC=1 MANUS_CORE_IP=$(q "$MANUS_CORE_IP") HAND=$(q "$HAND") MANUS_UDP_HOST=$(q "$MANUS_UDP_HOST") MANUS_UDP_PORT=$(q "$MANUS_UDP_PORT") docker compose --profile manus-sdk run --build --rm manus-sdk-udp-bridge-unicast"
-  local cmd_hand="$cdroot && HAND=$(q "$HAND") MANUS_PORT=$(q "$MANUS_PORT") CONFIRM_REAL_WH110=$(q "$CONFIRM_REAL_WH110") docker compose --profile real-wh110 --profile manus run --rm --service-ports real-wh110-manus"
+  local cmd_hand="$cdroot && GEN3_OPERATOR_DIR=$(q "$GEN3_OPERATOR_DIR") GEN3_OPERATOR_STATE=$(q "$GEN3_OPERATOR_STATE") HAND=$(q "$HAND") MANUS_PORT=$(q "$MANUS_PORT") CONFIRM_REAL_WH110=$(q "$CONFIRM_REAL_WH110") docker compose --profile real-wh110 --profile manus run --rm --service-ports real-wh110-manus"
 
-  tmux new-session -d -s "$session" -n gen3 "$cmd_gen3"
-  tmux new-window -t "$session" -n deadman "$cmd_deadman"
-  tmux new-window -t "$session" -n manus "$cmd_bridge"
-  tmux new-window -t "$session" -n hand "$cmd_hand"
-  tmux select-window -t "$session:gen3"
+  # set-option/show-options resolve targets differently from has-session.
+  # Use tmux's returned ID, which works for both session and pane targets.
+  local session_id
+  session_id=$(tmux new-session -d -P -F '#{session_id}' -s "$session" -n gen3 "$cmd_gen3")
+  tmux set-option -t "$session_id" @gen3_repo_root "$repo_root"
+  tmux set-option -t "$session_id" @gen3_operator_dir "$(realpath "$GEN3_OPERATOR_DIR")"
+  tmux new-window -t "$session_id" -n deadman "$cmd_deadman"
+  tmux new-window -t "$session_id" -n manus "$cmd_bridge"
+  tmux new-window -t "$session_id" -n hand "$cmd_hand"
+  tmux select-window -t "$session_id:gen3"
   echo "Started tmux session: $session"
   echo "Attach/detach: tmux attach -t $(q "$session")   (detach with Ctrl-b d)"
-  tmux attach -t "$session"
+  tmux attach -t "$session_id"
 }
 
 status() {

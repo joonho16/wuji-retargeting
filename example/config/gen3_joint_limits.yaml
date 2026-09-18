@@ -1,0 +1,32 @@
+# Additional Gen3 arm caps: velocity in rad/s, acceleration in rad/s^2.
+# Read once before Servo starts. Acceleration uses MoveIt + robot + file caps
+# (URDF does not supply acceleration limits).
+# Real hardware: min(URDF, MoveIt, robot hard, selected robot soft, file cap).
+# Fake hardware: min(URDF, MoveIt, file cap); no connection to the robot.
+# Missing joints inherit the model/robot limits. Values must be positive/finite.
+# A larger file value cannot raise any model or robot limit.
+
+# This selects a stored soft-limit profile to apply in Servo. The Kortex
+# low-level driver does not automatically select/enforce this high-level mode.
+# Options: ANGULAR_TRAJECTORY, CARTESIAN_TRAJECTORY,
+#          ANGULAR_JOYSTICK, CARTESIAN_JOYSTICK.
+robot_soft_limit_mode: ANGULAR_TRAJECTORY
+
+# No extra caps by default. To add caps, REPLACE `joint_limits: {}` with the
+# commented example below (uncomment it); do not keep two joint_limits keys.
+# joint_7 is valid only with GEN3_DOF=7. Gripper limits are separate.
+joint_limits: {}
+# joint_limits:
+#   joint_1: {has_velocity_limits: true, max_velocity: 0.3}
+#   joint_2: {has_velocity_limits: true, max_velocity: 0.3}
+#   joint_3: {has_velocity_limits: true, max_velocity: 0.3}
+#   joint_4: {has_velocity_limits: true, max_velocity: 0.3}
+#   joint_5: {has_velocity_limits: true, max_velocity: 0.3}
+#   joint_6: {has_velocity_limits: true, max_velocity: 0.3}
+#   joint_7: {has_velocity_limits: true, max_velocity: 0.3}
+# Velocity and acceleration overrides can be set independently, for example:
+#   joint_1: {max_velocity: 0.3, max_acceleration: 1.0}
+#   joint_2: {max_acceleration: 0.8}
+# All joints inherit model/robot acceleration bounds even when omitted here.
+# Acceleration limits apply to normal Servo position references. Safety holds
+# and deadman release remain immediate and take precedence over smooth braking.

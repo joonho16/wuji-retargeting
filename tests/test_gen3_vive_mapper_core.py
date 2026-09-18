@@ -129,6 +129,17 @@ class Gen3ViveMapperCalibrationTest(unittest.TestCase):
         with self.assertRaisesRegex(MapperError, "angular_deadband_rad"):
             Gen3ViveCalibration.from_mapping(calibration_dict(angular_deadband_rad=float("nan")))
 
+    def test_workspace_limits_can_be_omitted_or_null(self) -> None:
+        without_limits = calibration_dict()
+        without_limits.pop("workspace_limits")
+        self.assertIsNone(Gen3ViveCalibration.from_mapping(without_limits).workspace_limits)
+        self.assertIsNone(calibration(workspace_limits=None).workspace_limits)
+
+    def test_invalid_workspace_limits_do_not_silently_disable_clamping(self) -> None:
+        for value in (False, "disabled", [], {}, {"x": [-1, 1], "y": [-1, 1]}):
+            with self.subTest(value=value), self.assertRaises(MapperError):
+                calibration(workspace_limits=value)
+
 
 class Gen3ViveMapperStateMachineTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -247,6 +258,74 @@ class Gen3ViveMapperStateMachineTest(unittest.TestCase):
         self.assertIsNone(still.stop_reason)
         self.assertEqual(still.linear_xyz, (0.0, 0.0, 0.0))
         self.assertTrue(still.zero_command)
+
+    def test_unbounded_workspace_follows_scaled_target_and_keeps_speed_cap(self) -> None:
+        for axis in range(3):
+            for direction in (-1.0, 1.0):
+                with self.subTest(axis=axis, direction=direction):
+                    core = Gen3ViveMapperCore(
+                        calibration(workspace_limits=None, linear_scale=1.5),
+                        MapperRuntimeConfig(dry_run=False, real_robot=True),
+                    )
+                    neutral_tool = ToolPose((0.4, 0.1, 0.3), (0.0, 0.0, 0.0, 1.0))
+                    core.update(
+                        pose=pose(t=24.0), deadman=deadman(), now_monotonic_s=24.0,
+                        real_robot_latch=True, current_tool_pose=neutral_tool,
+                    )
+                    tracker_position = [0.0, 0.0, 0.0]
+                    tracker_position[axis] = direction * 0.6
+                    moving = core.update(
+                        pose=pose(*tracker_position, t=24.01), deadman=deadman(),
+                        now_monotonic_s=24.01, real_robot_latch=True,
+                        current_tool_pose=neutral_tool,
+                    )
+                    self.assertTrue(moving.enabled)
+                    self.assertAlmostEqual(moving.linear_xyz[axis], direction * 0.2)
+                    self.assertAlmostEqual(math.sqrt(sum(v * v for v in moving.linear_xyz)), 0.2)
+
+                    # At the former 5 cm bound the new 90 cm target still lies ahead.
+                    old_bound = list(neutral_tool.position_xyz)
+                    old_bound[axis] += direction * 0.05
+                    beyond_old_bound = core.update(
+                        pose=pose(*tracker_position, t=24.02), deadman=deadman(),
+                        now_monotonic_s=24.02, real_robot_latch=True,
+                        current_tool_pose=ToolPose(tuple(old_bound), neutral_tool.quaternion_xyzw),
+                    )
+                    self.assertAlmostEqual(beyond_old_bound.linear_xyz[axis], direction * 0.2)
+
+                    target = list(neutral_tool.position_xyz)
+                    target[axis] += direction * 0.9
+                    reached = core.update(
+                        pose=pose(*tracker_position, t=24.03), deadman=deadman(),
+                        now_monotonic_s=24.03, real_robot_latch=True,
+                        current_tool_pose=ToolPose(tuple(target), neutral_tool.quaternion_xyzw),
+                    )
+                    self.assertTrue(reached.enabled)
+                    for value in reached.linear_xyz:
+                        self.assertAlmostEqual(value, 0.0)
+
+    def test_unbounded_workspace_keeps_angular_cap_and_stop_gates(self) -> None:
+        for stop in ("deadman", "stale"):
+            with self.subTest(stop=stop):
+                core = Gen3ViveMapperCore(calibration(workspace_limits=None))
+                core.update(pose=pose(t=25.0), deadman=deadman(), now_monotonic_s=25.0)
+                moving = core.update(
+                    pose=pose(0.6, t=25.01, quat=(math.sin(0.5), 0.0, 0.0, math.cos(0.5))),
+                    deadman=deadman(), now_monotonic_s=25.01,
+                )
+                self.assertTrue(moving.enabled)
+                self.assertEqual(moving.linear_xyz, (0.2, 0.0, 0.0))
+                self.assertEqual(moving.angular_xyz, (0.5, 0.0, 0.0))
+                stopped = core.update(
+                    pose=pose(0.6, t=25.02) if stop == "deadman" else None,
+                    deadman=deadman(stop != "deadman"),
+                    now_monotonic_s=25.02 if stop == "deadman" else 25.2,
+                )
+                expected = StopReason.DEADMAN_RELEASED if stop == "deadman" else StopReason.STALE
+                self.assertFalse(stopped.enabled)
+                self.assertEqual(stopped.stop_reason, expected.value)
+                self.assertEqual(stopped.linear_xyz, (0.0, 0.0, 0.0))
+                self.assertEqual(stopped.angular_xyz, (0.0, 0.0, 0.0))
 
     def test_linear_deadband_suppresses_stationary_tracker_jitter(self) -> None:
         core = Gen3ViveMapperCore(

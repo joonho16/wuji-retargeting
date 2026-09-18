@@ -1,0 +1,4 @@
+# Official Gen3 Kortex 2.x Python SDK (not the separate Kortex 3 / Link6 API).
+# Source: https://github.com/Kinovarobotics/Kinova-kortex2_Gen3_G3L#download-links
+# Includes its protobuf/deprecated dependencies. Pin and verify the SDK wheel.
+https://artifactory.kinovaapps.com/artifactory/generic-local-public/kortex/API/2.8.0/kortex_api-2.8.0.post5-py3-none-any.whl#sha256=5796425d48f0ab70c56ce9ecf06b8ab91f0b951319266e5d4c0b179cdb9e99cf

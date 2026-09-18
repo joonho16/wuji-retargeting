@@ -27,9 +27,11 @@ x-wuji-base: &wuji-base
 x-manus-sdk-volume: &manus-sdk-volume ${MANUS_SDK_HOST_DIR:-./manus-sdk/ManusSDK_v3.1.1}:${MANUS_SDK_ROOT:-/opt/manus/ManusSDK_v3.1.1}:${MANUS_SDK_VOLUME_MODE:-rw}
 x-manus-dev-volume: &manus-dev-volume /dev:/dev
 x-manus-udev-volume: &manus-udev-volume /run/udev:/run/udev:ro
+x-gui-auth-volume: &gui-auth-volume ${XAUTHORITY:-/dev/null}:/tmp/wuji.xauth:ro
 
 x-gui-env: &gui-env
   DISPLAY: ${DISPLAY:-}
+  XAUTHORITY: /tmp/wuji.xauth
   QT_X11_NO_MITSHM: "1"
   MUJOCO_GL: ${MUJOCO_GL:-glfw}
   LIBGL_ALWAYS_SOFTWARE: ${LIBGL_ALWAYS_SOFTWARE:-1}
@@ -89,6 +91,7 @@ services:
     volumes:
       - /dev:/dev
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - *gui-auth-volume
       # Use the host-side tuned YAML without rebuilding the image.
       - ./example/config:/workspace/wuji-retargeting/example/config:ro
     command:
@@ -107,6 +110,7 @@ services:
     volumes:
       - /dev:/dev
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - *gui-auth-volume
       # Keep tuning_tool.py auto-reload useful from the host editor.
       - ./example/config:/workspace/wuji-retargeting/example/config:rw
     command:
@@ -128,6 +132,7 @@ services:
     volumes:
       - /dev:/dev
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - *gui-auth-volume
       # wujihandpy reads per-device Wuji Studio assets from $HOME/.wuji.
       - ${HOME}/.wuji:/root/.wuji:ro
       # Use the same staged/tuned config files as simulation.
@@ -350,6 +355,7 @@ services:
     ports: *manus-ports
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - *gui-auth-volume
       - ./example/config:/workspace/wuji-retargeting/example/config:ro
     command:
       - bash
@@ -377,6 +383,7 @@ services:
     ports: *manus-ports
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - *gui-auth-volume
       - ./example/config:/workspace/wuji-retargeting/example/config:rw
     command:
       - bash
@@ -403,12 +410,17 @@ services:
       MANUS_PORT: ${MANUS_PORT:-15020}
       MANUS_UNIT: ${MANUS_UNIT:-m}
       MANUS_TIMEOUT: ${MANUS_TIMEOUT:-0.5}
+      GEN3_OPERATOR_STATE: ${GEN3_OPERATOR_STATE:-}
     ports: *manus-ports
     volumes:
       - /dev:/dev
       - /run/udev:/run/udev:ro
       - ${HOME}/.wuji:/root/.wuji:ro
       - ./example/config:/workspace/wuji-retargeting/example/config:ro
+      - ./example/teleop_real.py:/workspace/wuji-retargeting/example/teleop_real.py:ro
+      - ./example/operator_hold.py:/workspace/wuji-retargeting/example/operator_hold.py:ro
+      - ./example/wh110_hold.py:/workspace/wuji-retargeting/example/wh110_hold.py:ro
+      - ${GEN3_OPERATOR_DIR:-./.local/gen3_operator}:/operator:ro
     device_cgroup_rules:
       # WH110 USB-CDC serial devices: ttyACM and ttyUSB.
       - "c 166:* rmw"

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the interactive Gen3 VIVE keyboard deadman helper in the ROS2 Docker image.
+# Compatibility entrypoint for the focused A/B hold operator window.
 # Uses docker compose run --rm so the helper container is removed on exit.
 set -euo pipefail
 
@@ -7,14 +7,27 @@ script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repo_root=$(cd -- "$script_dir/.." && pwd)
 compose_file="$repo_root/docker-compose.gen3-vive.yml"
 
-topic=${GEN3_VIVE_PHYSICAL_DEADMAN_TOPIC:-/gen3_vive/physical_deadman}
-rate=${GEN3_VIVE_ENTER_DEADMAN_RATE_HZ:-20}
-
 cd "$repo_root"
-exec docker compose \
+export GEN3_OPERATOR_DIR=${GEN3_OPERATOR_DIR:-$repo_root/.local/gen3_operator}
+mkdir -p "$GEN3_OPERATOR_DIR"
+if [[ -z ${DISPLAY:-} ]]; then
+  echo 'A/B hold requires the Linux desktop DISPLAY; run from a desktop terminal.' >&2
+  exit 2
+fi
+operator_project=${COMPOSE_PROJECT_NAME:-wuji-retargeting}
+status=0
+docker compose \
   --project-directory "$repo_root" \
+  --project-name "$operator_project" \
   -f "$compose_file" \
   --profile tools \
-  run --rm --build shell \
-  bash -lc 'exec python3 example/arm_teleop/gen3_vive_enter_deadman.py --topic "$0" --rate-hz "$1" "${@:2}"' \
-  "$topic" "$rate" "$@"
+  run --rm --build operator \
+  python3 -m example.arm_teleop.gen3_operator_keyboard "$@" || status=$?
+
+if (( status == 42 )); then
+  exec python3 "$script_dir/gen3_teleop_shutdown.py" \
+    --repo "$repo_root" --operator-dir "$GEN3_OPERATOR_DIR" \
+    --operator-project "$operator_project" \
+    --tmux-session "${GEN3_MANUS_TMUX_SESSION:-}"
+fi
+exit "$status"

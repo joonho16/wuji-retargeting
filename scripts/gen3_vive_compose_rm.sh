@@ -15,8 +15,8 @@ Profiles:
   servo        fake Gen3 Servo + dry-run wrapper (no receiver/deadman helper)
   full-fake    receiver + fake Gen3 Servo + dry-run wrapper + dry-run deadman
   full-fake-rviz same as full-fake, with RViz launched through Docker/X11
-  full-real    receiver + real Gen3 Servo + real-gated wrapper
-  real-robot   real Gen3 Servo + real-gated wrapper, without receiver
+  full-real    receiver + real Gen3 native Twist + reviewed-calibration mapper
+  real-robot   real Gen3 native Twist + mapper, without receiver
   deadman      dry-run deadman helper only
   tools        interactive/tooling services
   test         unit/compile verification

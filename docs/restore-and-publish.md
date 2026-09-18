@@ -15,6 +15,8 @@ Tracked/recoverable assets include:
 - `docker/gen3-vive/`
 - `example/arm_teleop/`
 - Gen3 VIVE configs under `example/config/gen3_vive_*`
+- Current native axes, hand-back offset and speed settings in
+  `example/config/gen3_vive_native_handback.example.yaml` (review flag reset)
 - Gen3 VIVE scripts under `scripts/gen3_vive_*`
 - Unified operator launcher `scripts/gen3_manus_teleop.sh`
 - No-hardware tests under `tests/`
@@ -57,6 +59,10 @@ Prepare private assets:
    ```
 4. Edit `.local/gen3_vive_calib/real_gen3_vive_calibration.yaml` with measured
    values. Set `real_robot_calibration_reviewed: true` only after review.
+   To restore the saved Gen3 + left WH110 setup, use
+   `example/config/gen3_vive_native_handback.example.yaml` as the starting point.
+   It records the TCP-axis hand-back offset `[0, -0.070, 0.120]` m, VIVE axis
+   alignment, current displacement scales and 0.5 m/s / 100 deg/s caps.
 
 Build/check:
 

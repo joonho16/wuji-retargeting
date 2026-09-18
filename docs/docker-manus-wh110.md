@@ -286,6 +286,11 @@ The tuning tool auto-selects `config/retarget_manus_left.yaml` or
 Edit the config on the host; the container mounts `./example/config` read-write
 for tuning auto-reload.
 
+GUI services pass `DISPLAY` and mount the desktop session's `XAUTHORITY` file
+read-only at `/tmp/wuji.xauth`. Run from the logged-in desktop terminal so these
+environment variables refer to the active X11/Xwayland session. Compose changes
+take effect on the next `run`; rebuilding the image is not needed.
+
 ## MuJoCo simulation with MANUS input
 
 ```bash
