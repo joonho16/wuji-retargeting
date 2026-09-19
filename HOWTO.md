@@ -15,8 +15,8 @@ git submodule update --init --recursive
 
 # Gen3 실기 캘리브레이션 작업 파일 생성(ignored private file)
 scripts/gen3_manus_teleop.sh init-calib
-# 생성된 .local/gen3_vive_calib/real_gen3_vive_calibration.yaml 편집 후
-# real_robot_calibration_reviewed: true 로 바꾸기 전까지 실기 실행은 막힘
+# 현재 Gen3 + 왼쪽 WH110 설정으로 .local/gen3_vive_calib/real_gen3_vive_calibration.yaml 생성
+# 저장된 설정의 real_robot_calibration_reviewed: true도 반영하며, 기존 파일은 덮어쓰지 않음
 ```
 
 MANUS SDK는 Git에 넣지 않습니다. `manus-sdk/README.md`를 보고 로컬에만 `manus-sdk/ManusSDK_v3.1.1/`를 준비하세요. SDK→UDP 브리지는 `tools/manus_bridge/`의 tracked 소스에서 런타임에 빌드됩니다.

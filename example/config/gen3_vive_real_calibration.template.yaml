@@ -1,8 +1,7 @@
-# Gen3 VIVE real-robot calibration template.
-# Copy this file to .local/gen3_vive_calib/real_gen3_vive_calibration.yaml,
-# measure/edit every transform and limit, then change the review flag to true.
-# The real-robot compose wrapper refuses to run while this is false/missing.
-real_robot_calibration_reviewed: false
+# Gen3 + left WH110 calibration defaults from the current reviewed setup.
+# init-calib copies these settings to .local/gen3_vive_calib without overwriting
+# an existing file. The review flag applies to this saved physical setup.
+real_robot_calibration_reviewed: true
 
 source_frame: steamvr_world
 planning_frame: base_link
@@ -10,31 +9,27 @@ tracker_role: gen3_tracker
 tracker_mount_frame: gen3_tool_tracker
 
 # Transform from SteamVR/source coordinates into the Gen3 planning frame.
-# Replace identity with the measured calibration before real robot use.
+# User-selected 90-degree axis alignment: Gen3 (X, Y, Z) = VIVE (-Z, -X, +Y).
+# R_planning_source = [[0, 0, -1], [-1, 0, 0], [0, 1, 0]].
+# Absolute translation was not estimated; relative mapping uses rotation.
 T_planning_source:
   translation: [0.0, 0.0, 0.0]
-  rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
+  rotation_xyzw: [0.5, -0.5, -0.5, 0.5]
 
 # Native path: ^tool T_control for the robot hand's virtual tracker/control point.
-# translation: actual TCP -> desired control point, in TCP axes, in METRES.
+# translation: end_effector_link -> desired hand-back point, in TCP axes, METRES.
 # rotation_xyzw: control-frame orientation expressed in the actual TCP frame.
-# T_base_control = T_base_tool * T_tool_tracker_mount. Zero offset uses the TCP.
-# The physical human tracker position is mapped to this robot control point.
+# T_base_control = T_base_tool * T_tool_tracker_mount.
+# User-measured hand-back offset: X=0 mm, Y=-70 mm, Z=+120 mm.
 T_tool_tracker_mount:
-  translation: [0.0, 0.0, 0.0]
+  translation: [0.0, -0.070, 0.120]
   rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
 
 linear_scale: 1.0
 angular_scale: 1.0
-# Per-axis tracker-driven control-point limits, relative to its neutral pose
-# captured when deadman changes false -> true.
-# Optional: omit workspace_limits or set it to null to disable offset clamping.
-workspace_limits:
-  x: [-0.25, 0.25]
-  y: [-0.25, 0.25]
-  z: [-0.20, 0.20]
-max_linear_mps: 0.10
-max_angular_radps: 0.25
+# workspace_limits omitted: no tracker-driven target offset box.
+max_linear_mps: 0.5
+max_angular_radps: 1.7453292519943295  # 100 deg/s
 # Optional jitter deadbands before speed limiting/filtering.  Start small:
 # ~3 mm linear and ~0.02 rad angular suppress stationary VIVE/TF buzz without
 # changing larger hand motions.

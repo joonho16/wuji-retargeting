@@ -22,11 +22,13 @@ fi
 
 cat <<MSG
 
-Edit this file with measured real calibration values:
+Calibration working file (existing files are preserved):
   $target_file
 
-Before real robot use, set this only after review:
-  real_robot_calibration_reviewed: true
+New files use the saved Gen3 + left WH110 settings:
+  VIVE axes: (-Z, -X, +Y); TCP hand-back offset: [0, -0.070, 0.120] m
+  Linear/angular scale: 1.0; speed caps: 0.5 m/s, 100 deg/s
+  real_robot_calibration_reviewed: true for this saved setup
 
 Run full-real from the repo root with repo-relative paths:
   GEN3_ROBOT_IP=<robot-ip> \\

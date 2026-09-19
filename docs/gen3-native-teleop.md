@@ -73,7 +73,8 @@ max_angular_radps: 1.7453292519943295  # 100 deg/s
 
 A를 새로 누를 때 잡은 기준 위치 대비 트래커 병진에 `linear_scale`을 곱해 목표 위치로 사용합니다. 속도는 목표 오차에
 K=1/s를 적용하며, 두 cap은 각각 3차원 벡터의 크기를 제한합니다.
-calibration의 낮은 상한은 그대로 적용합니다. 새 설치의 미검토 template은 낮은 기본값을 유지합니다.
+calibration의 낮은 상한은 그대로 적용합니다. `init-calib`의 기본 template은 현재 저장된
+Gen3 + 왼쪽 WH110 설정(0.5m/s·100°/s 상한, reviewed=true)을 사용하며 기존 파일은 보존합니다.
 
 기존 `GEN3_VIVE_CALIBRATION`, `GEN3_VIVE_CALIBRATION_DIR`, deadman/status topic,
 `GEN3_VIVE_LOW_PASS_ALPHA` 환경 변수는 유지됩니다. 과거 `.env`의 Twist topic이
